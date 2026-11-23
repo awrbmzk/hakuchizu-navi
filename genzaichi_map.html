@@ -32,6 +32,18 @@
     text-align: center; font-size: 12px; color: #c01c28; pointer-events: none; }
   .attr { position: absolute; left: calc(env(safe-area-inset-left) + 6px); bottom: calc(env(safe-area-inset-bottom) + 4px);
     font-size: 10px; color: #666; background: rgba(255,255,255,.7); padding: 1px 4px; }
+  #off { position: absolute; left: 0; right: 0; bottom: 0; z-index: 9; background: #fff; border-top: 1px solid #bbb;
+    border-radius: 16px 16px 0 0; box-shadow: 0 -2px 10px rgba(0,0,0,.2); padding: 16px 18px calc(env(safe-area-inset-bottom) + 16px);
+    display: none; max-height: 70vh; overflow-y: auto; }
+  #off h2 { font-size: 17px; margin: 0 0 10px; }
+  #off .row { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+  #off select, #off button { font-size: 16px; padding: 8px 12px; border-radius: 8px; border: 1px solid #999; background: #fff; }
+  #off button.main { background: #1a5fb4; color: #fff; border-color: #1a5fb4; }
+  #off .info { font-size: 13px; color: #444; line-height: 1.6; }
+  #obar { height: 8px; background: #ddd; border-radius: 4px; overflow: hidden; }
+  #obar > div { height: 100%; width: 0; background: #1a5fb4; }
+  #net { position: absolute; left: calc(env(safe-area-inset-left) + 10px); top: calc(env(safe-area-inset-top) + 14px);
+    font-size: 12px; font-weight: bold; padding: 3px 8px; border-radius: 10px; background: #c01c28; color: #fff; display: none; }
   .me { width: 22px; height: 22px; position: relative; }
   .me .dot { position: absolute; inset: 3px; border-radius: 50%; background: #1a73e8; border: 3px solid #fff; box-shadow: 0 0 4px rgba(0,0,0,.5); }
   .me .arrow { position: absolute; left: 50%; top: -16px; width: 0; height: 0; transform-origin: 50% 27px; margin-left: -9px;
@@ -49,6 +61,31 @@
   <button id="bTrack" class="on">軌跡</button>
   <button id="bClear">軌跡<br>消去</button>
   <button id="bWake">画面<br>常時</button>
+  <button id="bOff">オフ<br>ライン</button>
+</div>
+<div id="net">圏外</div>
+
+<div id="off">
+  <h2>オフライン用に地図を保存</h2>
+  <div class="row">
+    <select id="oArea"><option value="view">いま表示している範囲</option></select>
+  </div>
+  <div class="row"><span class="info" id="oEst">範囲を選ぶと枚数を計算します。</span></div>
+  <div class="row">
+    <button class="main" id="oGo">保存する</button>
+    <button id="oStop" style="display:none">中止</button>
+    <button id="oClose">閉じる</button>
+  </div>
+  <div id="obar"><div></div></div>
+  <div class="row"><span class="info" id="oStat"></span></div>
+  <div class="row">
+    <button id="oDel">保存した地図を全部消す</button>
+  </div>
+  <p class="info">
+    ・Wi-Fiのある場所で保存してください。市町村1つでおよそ数十MBです。<br>
+    ・保存した範囲は、圏外でも地図が表示されます。一度見た場所も自動で保存されます。<br>
+    ・アプリ本体も保存されるので、圏外でもこのページを開けます（ホーム画面に追加しておくと便利です）。
+  </p>
 </div>
 <div class="attr">出典：国土地理院ベクトルタイル</div>
 <div id="msg"></div>
@@ -65,10 +102,37 @@
 {
 const $ = id => document.getElementById(id);
 const TRACK_KEY = 'hakuchizu_track_v1';
+const TILE_URL = (z, x, y) => `https://cyberjapandata.gsi.go.jp/xyz/experimental_bvmap/${z}/${x}/${y}.pbf`;
+const TILE_CACHE = 'gsi-tiles-v1';
+const MAXZ = 15;   // これより拡大したときは z15 のデータを拡大表示（オフライン保存量を抑えるため）
+const MINZ_SAVE = 8;
+const BOUNDARY_URL = 'https://raw.githubusercontent.com/smartnews-smri/japan-topography/main/data/municipality/geojson/s0010/N03-21_10_210101.json';
+const hasCache = 'caches' in window;
+
+// アプリ本体をオフラインでも開けるように
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
+
+// 地図タイル：まずスマホ内の保存分を探し、なければ取得して保存
+async function getTile(z, x, y) {
+  const url = TILE_URL(z, x, y);
+  let cache = null;
+  if (hasCache) { try { cache = await caches.open(TILE_CACHE); const hit = await cache.match(url); if (hit) return await hit.arrayBuffer(); } catch (e) {} }
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return new ArrayBuffer(0);           // データのない場所（海など）
+    if (cache) cache.put(url, r.clone()).catch(() => {});
+    return await r.arrayBuffer();
+  } catch (e) { return new ArrayBuffer(0); }        // 圏外で未保存の場所は空白
+}
+maplibregl.addProtocol('gsic', async (params) => {
+  const m = params.url.match(/gsic:\/\/(\d+)\/(\d+)\/(\d+)/);
+  return { data: await getTile(+m[1], +m[2], +m[3]) };
+});
+
 const STYLE = {
   version: 8,
   sources: {
-    gsi: { type: 'vector', tiles: ['https://cyberjapandata.gsi.go.jp/xyz/experimental_bvmap/{z}/{x}/{y}.pbf'], minzoom: 4, maxzoom: 16 },
+    gsi: { type: 'vector', tiles: ['gsic://{z}/{x}/{y}'], minzoom: 4, maxzoom: MAXZ },
     track: { type: 'geojson', data: { type: 'Feature', geometry: { type: 'LineString', coordinates: [] } } },
     accuracy: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } }
   },
@@ -199,6 +263,119 @@ $('bClear').onclick = () => {
   clearArmed = false; $('bClear').innerHTML = '軌跡<br>消去'; track = []; saveTrack(); drawTrack();
 };
 $('bWake').onclick = async () => { if (wakeLock) { await wakeLock.release(); wakeLock = null; setBtn('bWake', false); } else if ('wakeLock' in navigator) requestWake(); else msg('この端末では画面の常時点灯を設定できません。'); };
+// ---------- オフライン保存 ----------
+let munis = null, dlStop = false;
+const lon2t = (lng, z) => (lng + 180) / 360 * Math.pow(2, z);
+const lat2t = (lat, z) => { const s = Math.sin(lat * Math.PI / 180); return (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * Math.pow(2, z); };
+
+async function loadMunis() {
+  if (munis) return munis;
+  munis = {};
+  try {
+    let r = null, cache = hasCache ? await caches.open(TILE_CACHE) : null;
+    if (cache) r = await cache.match(BOUNDARY_URL);
+    if (!r) { r = await fetch(BOUNDARY_URL); if (cache && r.ok) await cache.put(BOUNDARY_URL, r.clone()); }
+    const g = await r.json();
+    for (const f of g.features) {
+      const p = f.properties; if (!p.N03_004) continue;
+      const name = (p.N03_003 || '') + p.N03_004;
+      (munis[name] = munis[name] || []).push(...(f.geometry.type === 'MultiPolygon' ? f.geometry.coordinates : [f.geometry.coordinates]));
+    }
+    const sel = $('oArea');
+    Object.keys(munis).forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; sel.appendChild(o); });
+  } catch (e) { $('oEst').textContent = '市町村の一覧を読み込めませんでした（「いま表示している範囲」は使えます）。'; }
+  return munis;
+}
+
+// 範囲に含まれるタイルの一覧
+function tileList(area) {
+  const list = [];
+  if (area === 'view') {
+    const b = map.getBounds();
+    for (let z = MINZ_SAVE; z <= MAXZ; z++) {
+      const x0 = Math.floor(lon2t(b.getWest(), z)), x1 = Math.floor(lon2t(b.getEast(), z));
+      const y0 = Math.floor(lat2t(b.getNorth(), z)), y1 = Math.floor(lat2t(b.getSouth(), z));
+      for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) list.push([z, x, y]);
+    }
+    return list;
+  }
+  const polys = munis[area]; if (!polys) return list;
+  for (let z = MINZ_SAVE; z <= MAXZ; z++) {
+    const rings = polys.map(p => p[0].map(([lng, lat]) => [lon2t(lng, z), lat2t(lat, z)]));
+    const buf = Math.max(0.15, 400 / (40075016 * Math.cos(36.4 * Math.PI / 180) / Math.pow(2, z))); // 約400mの余裕
+    let mnx = Infinity, mny = Infinity, mxx = -Infinity, mxy = -Infinity;
+    rings.flat().forEach(([x, y]) => { mnx = Math.min(mnx, x); mny = Math.min(mny, y); mxx = Math.max(mxx, x); mxy = Math.max(mxy, y); });
+    for (let x = Math.floor(mnx - buf); x <= Math.floor(mxx + buf); x++)
+      for (let y = Math.floor(mny - buf); y <= Math.floor(mxy + buf); y++)
+        if (rectHitsPolys(x - buf, y - buf, x + 1 + buf, y + 1 + buf, rings)) list.push([z, x, y]);
+  }
+  return list;
+}
+function rectHitsPolys(x0, y0, x1, y1, rings) {
+  const cs = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+  const inPoly = (pt, r) => { let c = false; for (let i = 0, j = r.length - 1; i < r.length; j = i++) { const [xi, yi] = r[i], [xj, yj] = r[j]; if (((yi > pt[1]) != (yj > pt[1])) && (pt[0] < (xj - xi) * (pt[1] - yi) / (yj - yi) + xi)) c = !c; } return c; };
+  const o = (p, q, r) => Math.sign((q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]));
+  const segX = (a, b, c, d) => o(a, b, c) != o(a, b, d) && o(c, d, a) != o(c, d, b);
+  for (const r of rings) {
+    if (cs.some(c => inPoly(c, r))) return true;
+    if (r.some(([x, y]) => x >= x0 && x <= x1 && y >= y0 && y <= y1)) return true;
+    for (let i = 0; i < r.length - 1; i++) for (let k = 0; k < 4; k++) if (segX(r[i], r[i + 1], cs[k], cs[(k + 1) % 4])) return true;
+  }
+  return false;
+}
+async function showUsage() {
+  try { const e = await navigator.storage.estimate(); $('oStat').textContent = `このアプリの保存量：約 ${(e.usage / 1e6).toFixed(0)} MB`; } catch (e) {}
+}
+function updateEst() {
+  const n = tileList($('oArea').value).length;
+  $('oEst').textContent = `地図データ ${n.toLocaleString()} 枚（目安 ${Math.round(n * 0.03)}〜${Math.round(n * 0.08)} MB）`;
+}
+
+$('bOff').onclick = async () => {
+  $('off').style.display = 'block';
+  if (!hasCache) { $('oEst').textContent = 'この環境では地図を保存できません（https のURLで開いてください）。'; return; }
+  await loadMunis(); updateEst(); showUsage();
+};
+$('oArea').onchange = updateEst;
+$('oClose').onclick = () => { $('off').style.display = 'none'; };
+$('oStop').onclick = () => { dlStop = true; };
+$('oGo').onclick = async () => {
+  if (!hasCache) return;
+  try { if (navigator.storage && navigator.storage.persist) await navigator.storage.persist(); } catch (e) {}
+  const list = tileList($('oArea').value);
+  const cache = await caches.open(TILE_CACHE);
+  let done = 0, saved = 0, failed = 0, bytes = 0, i = 0; dlStop = false;
+  $('oGo').disabled = true; $('oStop').style.display = '';
+  const worker = async () => {
+    while (i < list.length && !dlStop) {
+      const [z, x, y] = list[i++]; const url = TILE_URL(z, x, y);
+      try {
+        if (!(await cache.match(url))) {
+          const r = await fetch(url);
+          if (r.ok) { const b = await r.clone().arrayBuffer(); bytes += b.byteLength; await cache.put(url, r); saved++; }
+          else if (r.status !== 404) failed++;
+        }
+      } catch (e) { failed++; }
+      done++;
+      if (done % 10 === 0 || done === list.length) {
+        $('obar').firstChild.style.width = (done / list.length * 100).toFixed(1) + '%';
+        $('oStat').textContent = `${done.toLocaleString()} / ${list.length.toLocaleString()} 枚（新しく ${(bytes / 1e6).toFixed(1)} MB 保存）`;
+      }
+    }
+  };
+  await Promise.all([worker(), worker(), worker(), worker()]);   // 同時4本（地理院のサーバーに負担をかけすぎないため）
+  $('oGo').disabled = false; $('oStop').style.display = 'none';
+  $('oStat').textContent = (dlStop ? '中止しました。' : '保存が終わりました。') + `新しく ${saved.toLocaleString()} 枚・${(bytes / 1e6).toFixed(1)} MB` + (failed ? `（失敗 ${failed} 枚：もう一度「保存する」を押すと続きから取得します）` : '');
+};
+let delArmed = false;
+$('oDel').onclick = async () => {
+  if (!delArmed) { delArmed = true; $('oDel').textContent = 'もう一度押すと消します'; setTimeout(() => { delArmed = false; $('oDel').textContent = '保存した地図を全部消す'; }, 3000); return; }
+  delArmed = false; $('oDel').textContent = '保存した地図を全部消す';
+  await caches.delete(TILE_CACHE); munis = null; $('oArea').length = 1; $('oStat').textContent = '保存した地図を消しました。'; showUsage();
+};
+const net = () => { $('net').style.display = navigator.onLine ? 'none' : 'block'; };
+window.addEventListener('online', net); window.addEventListener('offline', net); net();
+
 // 画面を戻したら常時点灯を再取得
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && $('bWake').classList.contains('on') === false && wakeLock && wakeLock.released) requestWake(); });
 }

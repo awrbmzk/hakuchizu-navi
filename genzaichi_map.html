@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#ffffff">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>白地図ナビ（道路＋市町村界）</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #fff;
+    font-family: "Hiragino Sans", "Yu Gothic", "Meiryo", sans-serif; -webkit-tap-highlight-color: transparent; }
+  #map { position: absolute; inset: 0; }
+  .hud { position: absolute; left: 50%; transform: translateX(-50%);
+    top: calc(env(safe-area-inset-top) + 10px); background: rgba(255,255,255,.92);
+    border: 1px solid #bbb; border-radius: 14px; padding: 6px 14px; display: flex; gap: 14px;
+    align-items: baseline; box-shadow: 0 1px 4px rgba(0,0,0,.2); white-space: nowrap; }
+  .hud b { font-size: 26px; font-variant-numeric: tabular-nums; }
+  .hud small { font-size: 12px; color: #555; }
+  .btns { position: absolute; right: calc(env(safe-area-inset-right) + 10px);
+    bottom: calc(env(safe-area-inset-bottom) + 28px); display: flex; flex-direction: column; gap: 10px; }
+  .btns button { width: 56px; height: 56px; border-radius: 50%; border: 1px solid #999; background: #fff;
+    font-size: 13px; font-weight: bold; line-height: 1.1; box-shadow: 0 1px 4px rgba(0,0,0,.25); color: #222; padding: 0; }
+  .btns button.on { background: #1a5fb4; color: #fff; border-color: #1a5fb4; }
+  #start { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: rgba(255,255,255,.96); z-index: 10; padding: 24px; text-align: center; gap: 14px; }
+  #start h1 { font-size: 22px; margin: 0; }
+  #start p { font-size: 14px; color: #444; margin: 0; line-height: 1.7; max-width: 420px; }
+  #start button { font-size: 20px; padding: 16px 36px; border-radius: 30px; border: 0; background: #1a5fb4; color: #fff; }
+  #msg { position: absolute; left: 10px; right: 10px; bottom: calc(env(safe-area-inset-bottom) + 6px);
+    text-align: center; font-size: 12px; color: #c01c28; pointer-events: none; }
+  .attr { position: absolute; left: calc(env(safe-area-inset-left) + 6px); bottom: calc(env(safe-area-inset-bottom) + 4px);
+    font-size: 10px; color: #666; background: rgba(255,255,255,.7); padding: 1px 4px; }
+  .me { width: 22px; height: 22px; position: relative; }
+  .me .dot { position: absolute; inset: 3px; border-radius: 50%; background: #1a73e8; border: 3px solid #fff; box-shadow: 0 0 4px rgba(0,0,0,.5); }
+  .me .arrow { position: absolute; left: 50%; top: -16px; width: 0; height: 0; transform-origin: 50% 27px; margin-left: -9px;
+    border-left: 9px solid transparent; border-right: 9px solid transparent; border-bottom: 16px solid #1a73e8; display: none; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div class="hud"><span><b id="spd">--</b> <small>km/h</small></span><span><small id="acc">位置待ち</small></span></div>
+
+<div class="btns">
+  <button id="bFollow" class="on">追従</button>
+  <button id="bHead">北上</button>
+  <button id="bTrack" class="on">軌跡</button>
+  <button id="bClear">軌跡<br>消去</button>
+  <button id="bWake">画面<br>常時</button>
+</div>
+<div class="attr">出典：国土地理院ベクトルタイル</div>
+<div id="msg"></div>
+
+<div id="start">
+  <h1>白地図ナビ</h1>
+  <p>道路と市町村界だけの白地図に、いまの位置と走ったルートを表示します。<br>
+     「開始」を押して、位置情報の利用を「許可」してください。</p>
+  <button id="go">開始</button>
+  <p style="font-size:12px;color:#777">運転中は画面を操作しないでください。スマホはホルダーに固定してください。</p>
+</div>
+
+<script>
+{
+const $ = id => document.getElementById(id);
+const TRACK_KEY = 'hakuchizu_track_v1';
+const STYLE = {
+  version: 8,
+  sources: {
+    gsi: { type: 'vector', tiles: ['https://cyberjapandata.gsi.go.jp/xyz/experimental_bvmap/{z}/{x}/{y}.pbf'], minzoom: 4, maxzoom: 16 },
+    track: { type: 'geojson', data: { type: 'Feature', geometry: { type: 'LineString', coordinates: [] } } },
+    accuracy: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } }
+  },
+  layers: [
+    { id: 'bg', type: 'background', paint: { 'background-color': '#ffffff' } },
+    { id: 'road', type: 'line', source: 'gsi', 'source-layer': 'road',
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#444',
+        'line-width': ['interpolate', ['linear'], ['zoom'],
+          12, ['match', ['to-number', ['get', 'rnkWidth'], -1], 4, 1.6, 3, 1.2, 2, 0.8, 0.5],
+          17, ['match', ['to-number', ['get', 'rnkWidth'], -1], 4, 6, 3, 4.5, 2, 3, 1, 2, 1.5]] } },
+    { id: 'pref', type: 'line', source: 'gsi', 'source-layer': 'boundary',
+      filter: ['==', ['to-number', ['get', 'ftCode']], 1211],
+      paint: { 'line-color': '#000', 'line-width': 5, 'line-dasharray': [7, 2, 1, 2] } },
+    { id: 'muni', type: 'line', source: 'gsi', 'source-layer': 'boundary',
+      filter: ['==', ['to-number', ['get', 'ftCode']], 1212],
+      paint: { 'line-color': '#000', 'line-width': 4, 'line-dasharray': [6, 2, 1, 2, 1, 2] } },
+    { id: 'acc', type: 'fill', source: 'accuracy', paint: { 'fill-color': '#1a73e8', 'fill-opacity': 0.12 } },
+    { id: 'track', type: 'line', source: 'track', layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#e01b24', 'line-width': 4, 'line-opacity': 0.75 } }
+  ]
+};
+
+let track = [];
+try { track = JSON.parse(localStorage.getItem(TRACK_KEY) || '[]'); } catch (e) { track = []; }
+
+const map = new maplibregl.Map({ container: 'map', style: STYLE, center: [139.342, 36.412], zoom: 15,
+  attributionControl: false, pitchWithRotate: false, dragRotate: true });
+map.touchZoomRotate.enableRotation();
+
+const meEl = document.createElement('div'); meEl.className = 'me';
+meEl.innerHTML = '<div class="arrow"></div><div class="dot"></div>';
+const arrow = meEl.querySelector('.arrow');
+const marker = new maplibregl.Marker({ element: meEl, rotationAlignment: 'map' });
+let markerAdded = false;
+
+let follow = true, headingUp = false, showTrack = true, wakeLock = null, last = null, lastHeading = null;
+
+const setBtn = (id, on) => $(id).classList.toggle('on', on);
+const msg = t => { $('msg').textContent = t || ''; };
+
+function circle(lng, lat, r) {
+  const pts = [], k = r / 6378137;
+  for (let i = 0; i <= 40; i++) {
+    const a = i / 40 * 2 * Math.PI;
+    pts.push([lng + (k * Math.sin(a)) * 180 / Math.PI / Math.cos(lat * Math.PI / 180), lat + (k * Math.cos(a)) * 180 / Math.PI]);
+  }
+  return { type: 'Feature', geometry: { type: 'Polygon', coordinates: [pts] } };
+}
+function dist(a, b) {
+  const R = 6371000, t = Math.PI / 180;
+  const dLat = (b[1] - a[1]) * t, dLng = (b[0] - a[0]) * t;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a[1] * t) * Math.cos(b[1] * t) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+function bearing(a, b) {
+  const t = Math.PI / 180, y = Math.sin((b[0] - a[0]) * t) * Math.cos(b[1] * t);
+  const x = Math.cos(a[1] * t) * Math.sin(b[1] * t) - Math.sin(a[1] * t) * Math.cos(b[1] * t) * Math.cos((b[0] - a[0]) * t);
+  return (Math.atan2(y, x) / t + 360) % 360;
+}
+function drawTrack() {
+  const s = map.getSource('track'); if (!s) return;
+  s.setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: showTrack ? track : [] } });
+}
+function saveTrack() { try { localStorage.setItem(TRACK_KEY, JSON.stringify(track.slice(-20000))); } catch (e) {} }
+
+function onPos(p) {
+  const { longitude: lng, latitude: lat, accuracy, speed, heading } = p.coords;
+  const here = [lng, lat];
+  msg('');
+  $('acc').textContent = '誤差 約' + Math.round(accuracy) + 'm';
+  // 速度：端末の値、なければ前回位置から計算
+  let v = (speed != null && speed >= 0) ? speed : null;
+  if (v == null && last) { const dt = (p.timestamp - last.t) / 1000; if (dt > 0) v = dist(last.pos, here) / dt; }
+  $('spd').textContent = v == null ? '--' : Math.round(v * 3.6);
+  // 進行方向：端末の値、なければ移動方向
+  let h = (heading != null && !isNaN(heading) && v != null && v > 1) ? heading : null;
+  if (h == null && last && dist(last.pos, here) > 8) h = bearing(last.pos, here);
+  if (h != null) lastHeading = h;
+  if (lastHeading != null && (v == null || v > 0.8)) { arrow.style.display = 'block'; marker.setRotation(lastHeading); }
+  else if (lastHeading == null) arrow.style.display = 'none';
+
+  marker.setLngLat(here); if (!markerAdded) { marker.addTo(map); markerAdded = true; }
+  const acc = map.getSource('accuracy'); if (acc) acc.setData({ type: 'FeatureCollection', features: [circle(lng, lat, accuracy)] });
+
+  // 軌跡：精度が悪すぎる点と、ほぼ動いていない点は記録しない
+  if (accuracy < 60 && (!track.length || dist(track[track.length - 1], here) > 5)) { track.push(here); drawTrack(); saveTrack(); }
+
+  if (follow) {
+    const opt = { center: here, duration: 800, essential: true };
+    if (headingUp && lastHeading != null) opt.bearing = lastHeading;
+    map.easeTo(opt);
+  }
+  last = { pos: here, t: p.timestamp };
+}
+function onErr(e) {
+  if (e.code === 1) msg('位置情報が許可されていません。ブラウザの設定でこのサイトの位置情報を「許可」にしてください。');
+  else if (e.code === 3) msg('位置を取得中です…（空が見える場所だと早く取れます）');
+  else msg('位置を取得できません：' + e.message);
+}
+
+async function requestWake() {
+  try { wakeLock = await navigator.wakeLock.request('screen'); setBtn('bWake', true);
+    wakeLock.addEventListener('release', () => setBtn('bWake', false));
+  } catch (e) { msg('この端末では画面の常時点灯を設定できません。端末の設定で自動ロックを長めにしてください。'); }
+}
+
+$('go').onclick = () => {
+  if (!window.isSecureContext) { msg('このページは https のURLで開いたときだけ位置情報を使えます。'); }
+  if (!('geolocation' in navigator)) { msg('この端末・ブラウザは位置情報に対応していません。'); return; }
+  $('start').style.display = 'none';
+  navigator.geolocation.watchPosition(onPos, onErr, { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 });
+  if ('wakeLock' in navigator) requestWake();
+};
+
+map.on('load', () => drawTrack());
+// 指で地図を動かしたら追従を止める
+map.on('dragstart', () => { follow = false; setBtn('bFollow', false); });
+
+$('bFollow').onclick = () => { follow = !follow; setBtn('bFollow', follow);
+  if (follow && last) map.easeTo({ center: last.pos, zoom: Math.max(map.getZoom(), 14), duration: 600 }); };
+$('bHead').onclick = () => { headingUp = !headingUp; $('bHead').textContent = headingUp ? '進行方向' : '北上';
+  setBtn('bHead', headingUp); if (!headingUp) map.easeTo({ bearing: 0, duration: 500 }); };
+$('bTrack').onclick = () => { showTrack = !showTrack; setBtn('bTrack', showTrack); drawTrack(); };
+let clearArmed = false;
+$('bClear').onclick = () => {
+  if (!clearArmed) { clearArmed = true; $('bClear').innerHTML = 'もう<br>一度'; setTimeout(() => { clearArmed = false; $('bClear').innerHTML = '軌跡<br>消去'; }, 3000); return; }
+  clearArmed = false; $('bClear').innerHTML = '軌跡<br>消去'; track = []; saveTrack(); drawTrack();
+};
+$('bWake').onclick = async () => { if (wakeLock) { await wakeLock.release(); wakeLock = null; setBtn('bWake', false); } else if ('wakeLock' in navigator) requestWake(); else msg('この端末では画面の常時点灯を設定できません。'); };
+// 画面を戻したら常時点灯を再取得
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && $('bWake').classList.contains('on') === false && wakeLock && wakeLock.released) requestWake(); });
+}
+</script>
+</body>
+</html>

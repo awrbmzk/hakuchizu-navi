@@ -44,6 +44,20 @@
   #obar > div { height: 100%; width: 0; background: #1a5fb4; }
   #net { position: absolute; left: calc(env(safe-area-inset-left) + 10px); top: calc(env(safe-area-inset-top) + 14px);
     font-size: 12px; font-weight: bold; padding: 3px 8px; border-radius: 10px; background: #c01c28; color: #fff; display: none; }
+  #sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 8; background: #fff; border-radius: 16px 16px 0 0;
+    box-shadow: 0 -2px 10px rgba(0,0,0,.2); padding: 14px 18px calc(env(safe-area-inset-bottom) + 14px); display: none; }
+  #sheet .t { font-size: 15px; margin-bottom: 10px; }
+  #sheet .bs { display: flex; gap: 8px; flex-wrap: wrap; }
+  #sheet button, #nav button { font-size: 16px; padding: 10px 14px; border-radius: 10px; border: 1px solid #999; background: #fff; }
+  #sheet button.main { background: #1a5fb4; color: #fff; border-color: #1a5fb4; }
+  #sheet a { font-size: 15px; padding: 10px 14px; border-radius: 10px; border: 1px solid #999; color: #222; text-decoration: none; }
+  #nav { position: absolute; left: 8px; right: 8px; top: calc(env(safe-area-inset-top) + 8px); z-index: 7; display: none;
+    background: #1a5fb4; color: #fff; border-radius: 14px; padding: 10px 14px; box-shadow: 0 2px 8px rgba(0,0,0,.3); }
+  #nav .next { font-size: 22px; font-weight: bold; line-height: 1.25; }
+  #nav .sub { font-size: 14px; opacity: .95; margin-top: 4px; display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+  #nav button { padding: 6px 10px; font-size: 14px; color: #1a5fb4; }
+  body.navigating .hud { top: auto; bottom: calc(env(safe-area-inset-bottom) + 28px); left: 12px; transform: none; }
+  .dest { width: 26px; height: 26px; border-radius: 50% 50% 50% 0; background: #e01b24; transform: rotate(-45deg); border: 3px solid #fff; box-shadow: 0 0 4px rgba(0,0,0,.5); }
   .me { width: 22px; height: 22px; position: relative; }
   .me .dot { position: absolute; inset: 3px; border-radius: 50%; background: #1a73e8; border: 3px solid #fff; box-shadow: 0 0 4px rgba(0,0,0,.5); }
   .me .arrow { position: absolute; left: 50%; top: -16px; width: 0; height: 0; transform-origin: 50% 27px; margin-left: -9px;
@@ -64,6 +78,21 @@
   <button id="bOff">オフ<br>ライン</button>
 </div>
 <div id="net">圏外</div>
+
+<div id="sheet">
+  <div class="t" id="sheetT">この地点</div>
+  <div class="bs">
+    <button class="main" id="sNav">ここへナビ</button>
+    <a id="sGmap" href="#" target="_blank" rel="noopener">Googleマップで開く</a>
+    <button id="sCancel">閉じる</button>
+  </div>
+</div>
+
+<div id="nav">
+  <div class="next" id="nNext">ルートを検索中…</div>
+  <div class="sub"><span id="nRemain"></span>
+    <span><button id="nVoice">音声 ON</button> <button id="nEnd">終了</button></span></div>
+</div>
 
 <div id="off">
   <h2>オフライン用に地図を保存</h2>
@@ -93,7 +122,8 @@
 <div id="start">
   <h1>白地図ナビ</h1>
   <p>道路と市町村界だけの白地図に、いまの位置と走ったルートを表示します。<br>
-     「開始」を押して、位置情報の利用を「許可」してください。</p>
+     「開始」を押して、位置情報の利用を「許可」してください。<br>
+     地図を<b>長押し</b>すると、その地点へのナビを始められます。</p>
   <button id="go">開始</button>
   <p style="font-size:12px;color:#777">運転中は画面を操作しないでください。スマホはホルダーに固定してください。</p>
 </div>
@@ -134,7 +164,8 @@ const STYLE = {
   sources: {
     gsi: { type: 'vector', tiles: ['gsic://{z}/{x}/{y}'], minzoom: 4, maxzoom: MAXZ },
     track: { type: 'geojson', data: { type: 'Feature', geometry: { type: 'LineString', coordinates: [] } } },
-    accuracy: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } }
+    accuracy: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
+    route: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } }
   },
   layers: [
     { id: 'bg', type: 'background', paint: { 'background-color': '#ffffff' } },
@@ -150,6 +181,12 @@ const STYLE = {
     { id: 'muni', type: 'line', source: 'gsi', 'source-layer': 'boundary',
       filter: ['==', ['to-number', ['get', 'ftCode']], 1212],
       paint: { 'line-color': '#000', 'line-width': 4, 'line-dasharray': [6, 2, 1, 2, 1, 2] } },
+    { id: 'route-case', type: 'line', source: 'route', filter: ['==', ['get', 'kind'], 'route'],
+      layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 11 } },
+    { id: 'route', type: 'line', source: 'route', filter: ['==', ['get', 'kind'], 'route'],
+      layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#1a73e8', 'line-width': 7, 'line-opacity': 0.85 } },
+    { id: 'direct', type: 'line', source: 'route', filter: ['==', ['get', 'kind'], 'direct'],
+      paint: { 'line-color': '#1a73e8', 'line-width': 3, 'line-dasharray': [2, 2] } },
     { id: 'acc', type: 'fill', source: 'accuracy', paint: { 'fill-color': '#1a73e8', 'fill-opacity': 0.12 } },
     { id: 'track', type: 'line', source: 'track', layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: { 'line-color': '#e01b24', 'line-width': 4, 'line-opacity': 0.75 } }
@@ -227,6 +264,7 @@ function onPos(p) {
     map.easeTo(opt);
   }
   last = { pos: here, t: p.timestamp };
+  navUpdate(here);
 }
 function onErr(e) {
   if (e.code === 1) msg('位置情報が許可されていません。ブラウザの設定でこのサイトの位置情報を「許可」にしてください。');
@@ -263,6 +301,151 @@ $('bClear').onclick = () => {
   clearArmed = false; $('bClear').innerHTML = '軌跡<br>消去'; track = []; saveTrack(); drawTrack();
 };
 $('bWake').onclick = async () => { if (wakeLock) { await wakeLock.release(); wakeLock = null; setBtn('bWake', false); } else if ('wakeLock' in navigator) requestWake(); else msg('この端末では画面の常時点灯を設定できません。'); };
+// ---------- 長押しで目的地 → ナビ ----------
+const DEST_KEY = 'hakuchizu_dest_v1';
+const OSRM = (a, b) => `https://router.project-osrm.org/route/v1/driving/${a[0]},${a[1]};${b[0]},${b[1]}?overview=full&geometries=geojson&steps=true`;
+const destEl = document.createElement('div'); destEl.className = 'dest';
+const destMarker = new maplibregl.Marker({ element: destEl, anchor: 'bottom-left', offset: [-4, 4] });
+let pending = null;                // 長押しした地点
+let nav = null;                    // { dest, route, coords, steps, stepIdx, total, dur, lastReq, offCount, spoken }
+let voice = true;
+
+const fmtDist = m => m >= 1000 ? (m / 1000).toFixed(m >= 10000 ? 0 : 1) + 'km' : (Math.round(m / 10) * 10) + 'm';
+const DIRS = ['北', '北東', '東', '南東', '南', '南西', '西', '北西'];
+const dirName = b => DIRS[Math.round(b / 45) % 8];
+const MOD = { 'left': '左折', 'right': '右折', 'slight left': '左方向', 'slight right': '右方向', 'sharp left': '大きく左折',
+  'sharp right': '大きく右折', 'straight': '直進', 'uturn': 'Uターン' };
+function stepText(s) {
+  const t = s.maneuver.type, m = s.maneuver.modifier, name = s.name ? `（${s.name}）` : '';
+  if (t === 'arrive') return '目的地に到着';
+  if (t === 'depart') return 'ルートに沿って出発' + name;
+  if (t === 'roundabout' || t === 'rotary') return `ロータリーで${s.maneuver.exit || ''}番目の出口へ` + name;
+  if (t === 'on ramp') return `${MOD[m] || ''}で入口へ` + name;
+  if (t === 'off ramp') return `${MOD[m] || ''}で出口へ` + name;
+  if (t === 'fork') return (m && m.includes('left') ? '分岐を左へ' : '分岐を右へ') + name;
+  if (t === 'end of road') return `突き当たりを${MOD[m] || '曲がる'}` + name;
+  if (t === 'continue' || t === 'new name') return (m && m !== 'straight' ? MOD[m] : '道なりに直進') + name;
+  return (MOD[m] || '進む') + name;
+}
+function say(t) {
+  if (!voice || !('speechSynthesis' in window)) return;
+  try { const u = new SpeechSynthesisUtterance(t); u.lang = 'ja-JP'; speechSynthesis.cancel(); speechSynthesis.speak(u); } catch (e) {}
+}
+// 点から折れ線までの距離（m）と、いちばん近い区間の番号
+function nearestOnLine(p, line) {
+  const k = Math.cos(p[1] * Math.PI / 180) * 111320, kl = 110540;
+  let best = Infinity, idx = 0;
+  for (let i = 0; i < line.length - 1; i++) {
+    const ax = (line[i][0] - p[0]) * k, ay = (line[i][1] - p[1]) * kl, bx = (line[i + 1][0] - p[0]) * k, by = (line[i + 1][1] - p[1]) * kl;
+    const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy;
+    let t = L ? -(ax * dx + ay * dy) / L : 0; t = Math.max(0, Math.min(1, t));
+    const d = Math.hypot(ax + t * dx, ay + t * dy);
+    if (d < best) { best = d; idx = i; }
+  }
+  return { d: best, idx };
+}
+function setRouteData(features) { const s = map.getSource('route'); if (s) s.setData({ type: 'FeatureCollection', features }); }
+
+function openSheet(lngLat) {
+  pending = [lngLat.lng, lngLat.lat];
+  let t = `緯度 ${pending[1].toFixed(5)}, 経度 ${pending[0].toFixed(5)}`;
+  if (last) t = `ここまで直線で ${fmtDist(dist(last.pos, pending))}（${dirName(bearing(last.pos, pending))}）`;
+  $('sheetT').textContent = t;
+  $('sGmap').href = `https://www.google.com/maps/dir/?api=1&destination=${pending[1]},${pending[0]}&travelmode=driving`;
+  $('sheet').style.display = 'block';
+  destMarker.setLngLat(pending).addTo(map);
+}
+$('sCancel').onclick = () => { $('sheet').style.display = 'none'; if (!nav) destMarker.remove(); pending = null; };
+$('sNav').onclick = () => { $('sheet').style.display = 'none'; if (pending) startNav(pending); };
+
+// 長押しの検出（スマホ）：指1本で約0.6秒、ほとんど動かさなかったとき
+let lpTimer = null, lpStart = null;
+map.on('touchstart', (e) => {
+  if (e.originalEvent.touches.length !== 1) { clearTimeout(lpTimer); return; }
+  lpStart = e.point; const ll = e.lngLat;
+  clearTimeout(lpTimer); lpTimer = setTimeout(() => { if (navigator.vibrate) navigator.vibrate(30); openSheet(ll); }, 600);
+});
+map.on('touchmove', (e) => { if (lpStart && Math.hypot(e.point.x - lpStart.x, e.point.y - lpStart.y) > 10) clearTimeout(lpTimer); });
+['touchend', 'touchcancel', 'dragstart', 'zoomstart', 'rotatestart'].forEach(ev => map.on(ev, () => clearTimeout(lpTimer)));
+map.on('contextmenu', (e) => openSheet(e.lngLat));   // パソコンでは右クリック
+
+async function requestRoute(from) {
+  nav.lastReq = Date.now();
+  try {
+    const r = await fetch(OSRM(from, nav.dest));
+    const j = await r.json();
+    if (j.code !== 'Ok' || !j.routes.length) throw new Error(j.code);
+    const rt = j.routes[0];
+    nav.coords = rt.geometry.coordinates; nav.total = rt.distance; nav.dur = rt.duration;
+    nav.steps = rt.legs[0].steps; nav.stepIdx = 1;
+    nav.steps.forEach(s => { s._i = nearestOnLine(s.maneuver.location, nav.coords).idx; }); nav.spoken = {}; nav.offline = false; nav.offCount = 0;
+    setRouteData([{ type: 'Feature', properties: { kind: 'route' }, geometry: rt.geometry }]);
+    return true;
+  } catch (e) {
+    nav.offline = true; nav.coords = null;
+    return false;
+  }
+}
+async function startNav(dest) {
+  nav = { dest, coords: null, steps: [], stepIdx: 1, lastReq: 0, offCount: 0, spoken: {}, offline: false };
+  try { localStorage.setItem(DEST_KEY, JSON.stringify(dest)); } catch (e) {}
+  destMarker.setLngLat(dest).addTo(map);
+  document.body.classList.add('navigating'); $('nav').style.display = 'block';
+  $('nNext').textContent = 'ルートを検索中…'; $('nRemain').textContent = '';
+  follow = true; setBtn('bFollow', true);
+  if (!last) { $('nNext').textContent = '現在地を取得中…（「開始」を押してください）'; return; }
+  const ok = await requestRoute(last.pos);
+  if (ok) { say('ルート案内を開始します'); const b = new maplibregl.LngLatBounds(); nav.coords.forEach(c => b.extend(c));
+    map.fitBounds(b, { padding: 80, duration: 800 }); setTimeout(() => { if (nav) { follow = true; setBtn('bFollow', true); } }, 2500); }
+  navUpdate(last.pos);
+}
+function endNav() {
+  nav = null; try { localStorage.removeItem(DEST_KEY); } catch (e) {}
+  destMarker.remove(); setRouteData([]);
+  document.body.classList.remove('navigating'); $('nav').style.display = 'none';
+}
+$('nEnd').onclick = endNav;
+$('nVoice').onclick = () => { voice = !voice; $('nVoice').textContent = voice ? '音声 ON' : '音声 OFF'; };
+
+function navUpdate(here) {
+  if (!nav) return;
+  if (nav.arrived) return;
+  const toDest = dist(here, nav.dest);
+  if (toDest < 30) { nav.arrived = true; $('nNext').textContent = '目的地に到着しました'; $('nRemain').textContent = ''; say('目的地に到着しました'); setTimeout(endNav, 5000); return; }
+  // ルートがまだない／圏外：電波が戻ったら再検索、それまでは直線で案内
+  if (!nav.coords) {
+    if (!nav.offline || Date.now() - nav.lastReq > 20000) { if (Date.now() - nav.lastReq > 5000) requestRoute(here); }
+    setRouteData([{ type: 'Feature', properties: { kind: 'direct' }, geometry: { type: 'LineString', coordinates: [here, nav.dest] } }]);
+    $('nNext').textContent = `目的地は${dirName(bearing(here, nav.dest))}へ 直線 ${fmtDist(toDest)}`;
+    $('nRemain').textContent = navigator.onLine ? 'ルートを検索中…' : '圏外のため直線で表示中';
+    return;
+  }
+  // ルートから外れたら再検索（50m以上を2回続けて、前回から15秒以上）
+  const near = nearestOnLine(here, nav.coords);
+  if (near.d > 50) nav.offCount++; else nav.offCount = 0;
+  if (nav.offCount >= 2 && Date.now() - nav.lastReq > 15000) {
+    $('nNext').textContent = 'ルートを再検索中…'; say('ルートを再検索します');
+    requestRoute(here); return;
+  }
+  // 残り距離・時間
+  let remain = dist(here, nav.coords[Math.min(near.idx + 1, nav.coords.length - 1)]);
+  for (let i = near.idx + 1; i < nav.coords.length - 1; i++) remain += dist(nav.coords[i], nav.coords[i + 1]);
+  const mins = Math.max(1, Math.round(nav.dur * remain / Math.max(nav.total, 1) / 60));
+  const eta = new Date(Date.now() + mins * 60000);
+  $('nRemain').textContent = `残り ${fmtDist(remain)}・約${mins}分（${eta.getHours()}:${String(eta.getMinutes()).padStart(2, '0')}着）`;
+  // 次の曲がり角：近づいたら次へ進める
+  while (nav.stepIdx < nav.steps.length - 1 &&
+    (nav.steps[nav.stepIdx]._i < near.idx || dist(here, nav.steps[nav.stepIdx].maneuver.location) < 25)) nav.stepIdx++;
+  const st = nav.steps[nav.stepIdx]; if (!st) return;
+  const dm = dist(here, st.maneuver.location), txt = stepText(st);
+  $('nNext').textContent = `${fmtDist(dm)}先 ${txt}`;
+  const key = nav.stepIdx;
+  if (dm < 300 && dm > 120 && !nav.spoken[key + 'f']) { nav.spoken[key + 'f'] = 1; say(`およそ${Math.round(dm / 50) * 50}メートル先、${txt}です`); }
+  if (dm < 60 && !nav.spoken[key + 'n']) { nav.spoken[key + 'n'] = 1; say(`まもなく、${txt}です`); }
+}
+// 前回のナビ中に閉じた場合は目的地を復元
+try { const d = JSON.parse(localStorage.getItem(DEST_KEY) || 'null'); if (d) map.on('load', () => startNav(d)); } catch (e) {}
+
 // ---------- オフライン保存 ----------
 let munis = null, dlStop = false;
 const lon2t = (lng, z) => (lng + 180) / 360 * Math.pow(2, z);

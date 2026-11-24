@@ -58,6 +58,28 @@
   #nav button { padding: 6px 10px; font-size: 14px; color: #1a5fb4; }
   body.navigating .hud { top: auto; bottom: calc(env(safe-area-inset-bottom) + 28px); left: 12px; transform: none; }
   .dest { width: 26px; height: 26px; border-radius: 50% 50% 50% 0; background: #e01b24; transform: rotate(-45deg); border: 3px solid #fff; box-shadow: 0 0 4px rgba(0,0,0,.5); }
+  #bgp { position: absolute; right: calc(env(safe-area-inset-right) + 76px); bottom: calc(env(safe-area-inset-bottom) + 28px);
+    z-index: 6; background: #fff; border: 1px solid #999; border-radius: 12px; padding: 12px 14px; display: none;
+    box-shadow: 0 1px 6px rgba(0,0,0,.25); width: 220px; }
+  #bgp label { display: block; font-size: 15px; padding: 7px 0; }
+  #bgp input[type=radio] { transform: scale(1.3); margin-right: 8px; }
+  #bgp input[type=range] { width: 100%; height: 30px; }
+  #bgp .info { font-size: 12px; color: #555; }
+  #bSearch { position: absolute; left: calc(env(safe-area-inset-left) + 10px); top: calc(env(safe-area-inset-top) + 48px);
+    width: 48px; height: 48px; border-radius: 50%; border: 1px solid #999; background: #fff; font-size: 13px; font-weight: bold;
+    box-shadow: 0 1px 4px rgba(0,0,0,.25); padding: 0; color: #222; }
+  body.navigating #bSearch { top: calc(env(safe-area-inset-top) + 110px); }
+  #search { position: absolute; inset: 0; z-index: 11; background: #fff; display: none; flex-direction: column;
+    padding: calc(env(safe-area-inset-top) + 10px) 12px calc(env(safe-area-inset-bottom) + 10px); }
+  #search form { display: flex; gap: 8px; }
+  #search input { flex: 1; font-size: 17px; padding: 10px 12px; border: 1px solid #999; border-radius: 10px; }
+  #search form button { font-size: 16px; padding: 10px 14px; border-radius: 10px; border: 1px solid #1a5fb4; background: #1a5fb4; color: #fff; }
+  #search .close { border-color: #999; background: #fff; color: #222; }
+  #sres { list-style: none; margin: 10px 0 0; padding: 0; overflow-y: auto; flex: 1; }
+  #sres li { padding: 12px 6px; border-bottom: 1px solid #e3e3e3; }
+  #sres li .n { font-size: 16px; }
+  #sres li .s { font-size: 12px; color: #666; margin-top: 3px; }
+  #sinfo { font-size: 13px; color: #555; margin-top: 8px; }
   .me { width: 22px; height: 22px; position: relative; }
   .me .dot { position: absolute; inset: 3px; border-radius: 50%; background: #1a73e8; border: 3px solid #fff; box-shadow: 0 0 4px rgba(0,0,0,.5); }
   .me .arrow { position: absolute; left: 50%; top: -16px; width: 0; height: 0; transform-origin: 50% 27px; margin-left: -9px;
@@ -75,9 +97,31 @@
   <button id="bTrack" class="on">軌跡</button>
   <button id="bClear">軌跡<br>消去</button>
   <button id="bWake">画面<br>常時</button>
+  <button id="bBg">背景</button>
   <button id="bOff">オフ<br>ライン</button>
 </div>
+<div id="bgp">
+  <label><input type="radio" name="bg" value="none" checked>なし（白地図だけ）</label>
+  <label><input type="radio" name="bg" value="pale">淡色地図（地理院）</label>
+  <label><input type="radio" name="bg" value="std">標準地図（地理院）</label>
+  <label><input type="radio" name="bg" value="photo">航空写真（地理院）</label>
+  <label><input type="radio" name="bg" value="osm">OpenStreetMap</label>
+  <div class="info">濃さ</div>
+  <input type="range" id="bgOp" min="10" max="100" value="35">
+  <div class="info" id="bgAttr"></div>
+</div>
 <div id="net">圏外</div>
+
+<button id="bSearch">検索</button>
+<div id="search">
+  <form id="sform">
+    <input id="sq" type="search" placeholder="住所・施設名（例：桐生市織姫町1-1、桐生駅）" enterkeyhint="search" autocomplete="off">
+    <button type="submit">検索</button>
+    <button type="button" class="close" id="sclose">閉じる</button>
+  </form>
+  <div id="sinfo">住所は国土地理院、施設名はOpenStreetMapで検索します（電波が必要です）。</div>
+  <ul id="sres"></ul>
+</div>
 
 <div id="sheet">
   <div class="t" id="sheetT">この地点</div>
@@ -157,6 +201,25 @@ async function getTile(z, x, y) {
 maplibregl.addProtocol('gsic', async (params) => {
   const m = params.url.match(/gsic:\/\/(\d+)\/(\d+)\/(\d+)/);
   return { data: await getTile(+m[1], +m[2], +m[3]) };
+});
+
+// 背景地図（うっすら表示用）。見た場所は自動でスマホに保存される
+const BGS = {
+  pale:  { url: (z, x, y) => `https://cyberjapandata.gsi.go.jp/xyz/pale/${z}/${x}/${y}.png`, minzoom: 5, maxzoom: 18, attr: '背景：地理院タイル（淡色地図）' },
+  std:   { url: (z, x, y) => `https://cyberjapandata.gsi.go.jp/xyz/std/${z}/${x}/${y}.png`, minzoom: 5, maxzoom: 18, attr: '背景：地理院タイル（標準地図）' },
+  photo: { url: (z, x, y) => `https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/${z}/${x}/${y}.jpg`, minzoom: 2, maxzoom: 18, attr: '背景：地理院タイル（全国最新写真）' },
+  osm:   { url: (z, x, y) => `https://tile.openstreetmap.org/${z}/${x}/${y}.png`, minzoom: 0, maxzoom: 19, attr: '背景：© OpenStreetMap contributors' }
+};
+const BG_CACHE = 'bg-tiles-v1';
+maplibregl.addProtocol('bgc', async (params) => {
+  const m = params.url.match(/bgc:\/\/(\w+)\/(\d+)\/(\d+)\/(\d+)/);
+  const url = BGS[m[1]].url(+m[2], +m[3], +m[4]);
+  let cache = null;
+  if (hasCache) { try { cache = await caches.open(BG_CACHE); const hit = await cache.match(url); if (hit) return { data: await hit.arrayBuffer() }; } catch (e) {} }
+  const r = await fetch(url);                       // 失敗時はその部分だけ背景なし
+  if (!r.ok) throw new Error('tile ' + r.status);
+  if (cache && m[1] !== 'osm') cache.put(url, r.clone()).catch(() => {});   // OSMは利用規約に従い保存しない
+  return { data: await r.arrayBuffer() };
 });
 
 const STYLE = {
@@ -301,6 +364,32 @@ $('bClear').onclick = () => {
   clearArmed = false; $('bClear').innerHTML = '軌跡<br>消去'; track = []; saveTrack(); drawTrack();
 };
 $('bWake').onclick = async () => { if (wakeLock) { await wakeLock.release(); wakeLock = null; setBtn('bWake', false); } else if ('wakeLock' in navigator) requestWake(); else msg('この端末では画面の常時点灯を設定できません。'); };
+// ---------- 背景地図 ----------
+const BG_KEY = 'hakuchizu_bg_v1';
+let bgSet = { type: 'none', op: 35 };
+try { bgSet = Object.assign(bgSet, JSON.parse(localStorage.getItem(BG_KEY) || '{}')); } catch (e) {}
+function applyBg() {
+  if (map.getLayer('bgmap')) map.removeLayer('bgmap');
+  if (map.getSource('bgmap')) map.removeSource('bgmap');
+  const b = BGS[bgSet.type];
+  $('bgAttr').textContent = b ? b.attr : '';
+  document.querySelector('.attr').textContent = '出典：国土地理院ベクトルタイル' + (b ? '／' + b.attr.replace('背景：', '') : '');
+  setBtn('bBg', !!b);
+  if (!b) return;
+  map.addSource('bgmap', { type: 'raster', tiles: [`bgc://${bgSet.type}/{z}/{x}/{y}`], tileSize: 256, minzoom: b.minzoom, maxzoom: b.maxzoom });
+  map.addLayer({ id: 'bgmap', type: 'raster', source: 'bgmap', paint: { 'raster-opacity': bgSet.op / 100, 'raster-fade-duration': 0 } }, 'road');
+}
+function saveBg() { try { localStorage.setItem(BG_KEY, JSON.stringify(bgSet)); } catch (e) {} }
+$('bBg').onclick = () => { const p = $('bgp'); p.style.display = p.style.display === 'block' ? 'none' : 'block'; };
+document.querySelectorAll('#bgp input[name=bg]').forEach(r => {
+  r.checked = r.value === bgSet.type;
+  r.onchange = () => { bgSet.type = r.value; saveBg(); applyBg(); };
+});
+$('bgOp').value = bgSet.op;
+$('bgOp').oninput = () => { bgSet.op = +$('bgOp').value; saveBg(); if (map.getLayer('bgmap')) map.setPaintProperty('bgmap', 'raster-opacity', bgSet.op / 100); };
+map.on('click', () => { $('bgp').style.display = 'none'; });
+map.on('load', applyBg);
+
 // ---------- 長押しで目的地 → ナビ ----------
 const DEST_KEY = 'hakuchizu_dest_v1';
 const OSRM = (a, b) => `https://router.project-osrm.org/route/v1/driving/${a[0]},${a[1]};${b[0]},${b[1]}?overview=full&geometries=geojson&steps=true`;
@@ -346,10 +435,12 @@ function nearestOnLine(p, line) {
 }
 function setRouteData(features) { const s = map.getSource('route'); if (s) s.setData({ type: 'FeatureCollection', features }); }
 
-function openSheet(lngLat) {
+function openSheet(lngLat, label) {
   pending = [lngLat.lng, lngLat.lat];
   let t = `緯度 ${pending[1].toFixed(5)}, 経度 ${pending[0].toFixed(5)}`;
   if (last) t = `ここまで直線で ${fmtDist(dist(last.pos, pending))}（${dirName(bearing(last.pos, pending))}）`;
+  if (label) t = label + '\n' + t;
+  $('sheetT').style.whiteSpace = 'pre-line';
   $('sheetT').textContent = t;
   $('sGmap').href = `https://www.google.com/maps/dir/?api=1&destination=${pending[1]},${pending[0]}&travelmode=driving`;
   $('sheet').style.display = 'block';
@@ -445,6 +536,54 @@ function navUpdate(here) {
 }
 // 前回のナビ中に閉じた場合は目的地を復元
 try { const d = JSON.parse(localStorage.getItem(DEST_KEY) || 'null'); if (d) map.on('load', () => startNav(d)); } catch (e) {}
+
+// ---------- 住所・施設名で検索 ----------
+const GSI_ADDR = q => 'https://msearch.gsi.go.jp/address-search/AddressSearch?q=' + encodeURIComponent(q);
+const NOMI = (q, c) => 'https://nominatim.openstreetmap.org/search?format=jsonv2&countrycodes=jp&accept-language=ja&limit=10&q='
+  + encodeURIComponent(q) + (c ? `&viewbox=${c[0] - 0.5},${c[1] + 0.4},${c[0] + 0.5},${c[1] - 0.4}` : '');
+let searching = false;
+
+$('bSearch').onclick = () => { $('search').style.display = 'flex'; setTimeout(() => $('sq').focus(), 50); };
+$('sclose').onclick = () => { $('search').style.display = 'none'; };
+$('sform').onsubmit = async (e) => {
+  e.preventDefault();
+  const q = $('sq').value.trim(); if (!q || searching) return;
+  searching = true; $('sinfo').textContent = '検索中…'; $('sres').innerHTML = '';
+  const center = last ? last.pos : [map.getCenter().lng, map.getCenter().lat];
+  const results = [];
+  const [ga, no] = await Promise.allSettled([
+    fetch(GSI_ADDR(q)).then(r => r.json()),
+    fetch(NOMI(q, center)).then(r => r.json())
+  ]);
+  if (ga.status === 'fulfilled' && Array.isArray(ga.value))
+    ga.value.slice(0, 15).forEach(f => results.push({ name: f.properties.title, sub: '住所（国土地理院）', pos: f.geometry.coordinates.map(Number) }));
+  if (no.status === 'fulfilled' && Array.isArray(no.value))
+    no.value.forEach(f => {
+      const parts = String(f.display_name || '').split(',').map(s => s.trim());
+      results.push({ name: f.name || parts[0], sub: parts.slice(1).reverse().filter(s => !/^\d{3}-?\d{4}$/.test(s) && s !== '日本').join(' ') + '（OpenStreetMap）', pos: [Number(f.lon), Number(f.lat)] });
+    });
+  results.forEach(r => r.d = dist(center, r.pos));
+  results.sort((a, b) => a.d - b.d);
+  searching = false;
+  if (!results.length) {
+    $('sinfo').textContent = (ga.status === 'rejected' && no.status === 'rejected') ? '検索できませんでした。電波のある場所で試してください。' : '見つかりませんでした。書き方を変えて試してください（例：「桐生市本町」「桐生市役所」）。';
+    return;
+  }
+  $('sinfo').textContent = `${results.length} 件（近い順）`;
+  for (const r of results) {
+    const li = document.createElement('li');
+    const n = document.createElement('div'); n.className = 'n'; n.textContent = r.name;
+    const s = document.createElement('div'); s.className = 's'; s.textContent = `${fmtDist(r.d)}・${r.sub}`;
+    li.append(n, s);
+    li.onclick = () => {
+      $('search').style.display = 'none';
+      follow = false; setBtn('bFollow', false);
+      map.flyTo({ center: r.pos, zoom: Math.max(map.getZoom(), 15), duration: 900 });
+      openSheet({ lng: r.pos[0], lat: r.pos[1] }, r.name);
+    };
+    $('sres').appendChild(li);
+  }
+};
 
 // ---------- オフライン保存 ----------
 let munis = null, dlStop = false;
@@ -554,7 +693,7 @@ let delArmed = false;
 $('oDel').onclick = async () => {
   if (!delArmed) { delArmed = true; $('oDel').textContent = 'もう一度押すと消します'; setTimeout(() => { delArmed = false; $('oDel').textContent = '保存した地図を全部消す'; }, 3000); return; }
   delArmed = false; $('oDel').textContent = '保存した地図を全部消す';
-  await caches.delete(TILE_CACHE); munis = null; $('oArea').length = 1; $('oStat').textContent = '保存した地図を消しました。'; showUsage();
+  await caches.delete(TILE_CACHE); await caches.delete(BG_CACHE); munis = null; $('oArea').length = 1; $('oStat').textContent = '保存した地図を消しました。'; showUsage();
 };
 const net = () => { $('net').style.display = navigator.onLine ? 'none' : 'block'; };
 window.addEventListener('online', net); window.addEventListener('offline', net); net();

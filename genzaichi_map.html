@@ -306,7 +306,8 @@ const STYLE = {
       paint: { 'line-color': '#5b9bd5', 'line-width': 1 } },
     { id: 'bldg', type: 'fill', source: 'gsi', 'source-layer': 'building', layout: { visibility: 'none' },
       paint: { 'fill-color': '#e2e2e2', 'fill-outline-color': '#9a9a9a' } },
-    { id: 'road', type: 'line', source: 'gsi', 'source-layer': 'road',
+    { id: 'roadedge', type: 'line', source: 'gsi', 'source-layer': 'road', filter: ['<', ['to-number', ['get', 'ftCode']], 2700], paint: { 'line-color': '#bbbbbb', 'line-width': 0.6 } },
+    { id: 'road', type: 'line', source: 'gsi', 'source-layer': 'road', filter: ['>=', ['to-number', ['get', 'ftCode']], 2700], 
       layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: { 'line-color': '#444',
         'line-width': ['interpolate', ['linear'], ['zoom'],
@@ -554,7 +555,7 @@ function applyBg() {
   setBtn('bBg', !!b);
   if (!b) return;
   map.addSource('bgmap', { type: 'raster', tiles: [`bgc://${bgSet.type}/{z}/{x}/{y}`], tileSize: 256, minzoom: b.minzoom, maxzoom: b.maxzoom });
-  map.addLayer({ id: 'bgmap', type: 'raster', source: 'bgmap', paint: { 'raster-opacity': bgSet.op / 100, 'raster-fade-duration': 0 } }, 'road');
+  map.addLayer({ id: 'bgmap', type: 'raster', source: 'bgmap', paint: { 'raster-opacity': bgSet.op / 100, 'raster-fade-duration': 0 } }, 'roadedge');
 }
 function saveBg() { try { localStorage.setItem(BG_KEY, JSON.stringify(bgSet)); } catch (e) {} }
 $('bBg').onclick = () => { const p = $('bgp'); p.style.display = p.style.display === 'block' ? 'none' : 'block'; };

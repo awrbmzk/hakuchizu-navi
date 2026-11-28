@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>走りたい道エディタ</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font-family: "Yu Gothic", "Meiryo", "Hiragino Sans", sans-serif; color: #222; }
+  #wrap { display: flex; height: 100%; }
+  #side { width: 340px; flex: none; overflow-y: auto; border-right: 1px solid #ccc; background: #fafafa; padding: 12px 14px; }
+  #map { flex: 1; position: relative; }
+  h1 { font-size: 18px; margin: 0 0 10px; }
+  h2 { font-size: 14px; margin: 16px 0 6px; color: #444; border-bottom: 1px solid #ddd; padding-bottom: 3px; }
+  button { font-size: 14px; padding: 7px 11px; border-radius: 6px; border: 1px solid #999; background: #fff; cursor: pointer; }
+  button.main { background: #1a5fb4; color: #fff; border-color: #1a5fb4; }
+  button.warn { color: #c01c28; border-color: #c01c28; }
+  button:disabled { opacity: .45; cursor: default; }
+  input[type=text], input[type=password], input[type=search] { font-size: 14px; padding: 6px 8px; border: 1px solid #aaa; border-radius: 6px; width: 100%; }
+  .row { display: flex; gap: 6px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
+  .note { font-size: 12px; color: #555; line-height: 1.6; }
+  #status { font-size: 13px; margin: 8px 0; min-height: 1.4em; white-space: pre-line; }
+  #status.err { color: #c01c28; } #status.ok { color: #26a269; }
+  .plan { border: 1px solid #ddd; background: #fff; border-radius: 8px; padding: 7px 9px; margin: 6px 0; display: flex; gap: 8px; align-items: center; cursor: pointer; }
+  .plan.sel { border-color: #1a5fb4; box-shadow: 0 0 0 2px rgba(26,95,180,.25); }
+  .plan .sw { width: 16px; height: 16px; border-radius: 4px; flex: none; }
+  .plan .nm { flex: 1; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .plan .km { font-size: 12px; color: #666; white-space: nowrap; }
+  #edit { border: 2px solid #1a5fb4; border-radius: 8px; padding: 8px 10px; background: #fff; display: none; }
+  .colors { display: flex; gap: 6px; flex-wrap: wrap; }
+  .colors span { width: 24px; height: 24px; border-radius: 50%; cursor: pointer; border: 2px solid #fff; box-shadow: 0 0 0 1px #999; }
+  .colors span.on { box-shadow: 0 0 0 3px #222; }
+  #sres div { padding: 6px 4px; border-bottom: 1px solid #eee; cursor: pointer; font-size: 13px; }
+  #sres div:hover { background: #eef4fb; }
+  .wp { width: 14px; height: 14px; border-radius: 50%; background: #fff; border: 3px solid #1a5fb4; cursor: grab; }
+  .wp.first { border-color: #26a269; } .wp.last { border-color: #c01c28; }
+  #hint { position: absolute; left: 50%; top: 10px; transform: translateX(-50%); background: rgba(26,95,180,.92); color: #fff;
+    padding: 6px 14px; border-radius: 16px; font-size: 13px; z-index: 5; display: none; pointer-events: none; }
+  details summary { cursor: pointer; font-size: 14px; font-weight: bold; color: #444; margin-top: 14px; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="side">
+    <h1>走りたい道エディタ</h1>
+    <div class="note">地図をクリックして走りたい道を描き、保存するとスマホの白地図ナビに表示されます。</div>
+
+    <h2>場所を探す</h2>
+    <form id="sform" class="row"><input id="sq" type="search" placeholder="住所・地名（例：桐生市梅田町）"><button>検索</button></form>
+    <div id="sres"></div>
+
+    <h2>走りたい道</h2>
+    <div class="row"><button class="main" id="bNew">＋ 新しい道を描く</button></div>
+    <div id="edit">
+      <div class="row"><input id="eName" type="text" placeholder="名前（例：梅田の林道）"></div>
+      <div class="colors" id="eColors"></div>
+      <div class="row">
+        <label><input type="radio" name="mode" value="snap" checked> 道路に沿って</label>
+        <label><input type="radio" name="mode" value="line"> まっすぐ</label>
+      </div>
+      <div class="note">地図をクリックで点を追加。点はドラッグで移動、右クリックで削除。<br>「道路に沿って」は点の間を道路でつなぎます（林道など道路データにない道は「まっすぐ」で）。</div>
+      <div class="row"><span id="eInfo" class="note"></span></div>
+      <div class="row">
+        <button id="eUndo">1つ戻す</button>
+        <button class="main" id="eDone">決定</button>
+        <button id="eCancel">やめる</button>
+        <button class="warn" id="eDel">この道を削除</button>
+      </div>
+    </div>
+    <div id="list"></div>
+
+    <h2>スマホへ送る</h2>
+    <div class="row"><button class="main" id="bSave">GitHubに保存</button><button id="bReload">読み込み直す</button></div>
+    <div id="status"></div>
+    <div class="note">保存してから1〜2分でスマホに反映されます。スマホでは「表示」→「走りたい道」でオン、「記録」→「走りたい道を更新」で最新を読み込みます。</div>
+
+    <details id="setup">
+      <summary>GitHubの設定</summary>
+      <div class="row"><input id="gOwner" type="text" placeholder="ユーザー名" style="width:48%"><input id="gRepo" type="text" placeholder="リポジトリ名" style="width:48%"></div>
+      <div class="row"><input id="gToken" type="password" placeholder="アクセストークン（github_pat_…）"></div>
+      <div class="row"><button id="gSaveCfg">設定を保存</button><button id="gForget">トークンを消す</button></div>
+      <div class="note">トークンはこのPCのブラウザの中にだけ保存され、GitHub以外には送りません。このリポジトリの「Contents」だけ読み書きできるトークンを使ってください。</div>
+    </details>
+
+    <details>
+      <summary>表示</summary>
+      <div class="row"><label><input type="checkbox" id="lBldg"> 建物</label><label><input type="checkbox" id="lWater"> 川・水域</label><label><input type="checkbox" id="lRail" checked> 鉄道</label></div>
+    </details>
+    <p class="note">出典：国土地理院ベクトルタイル。道路に沿った線は OpenStreetMap のデータを使う OSRM で計算しています。</p>
+  </div>
+  <div id="map"><div id="hint">クリックで点を追加</div></div>
+</div>
+
+<script>
+{
+const $ = id => document.getElementById(id);
+const COLORS = ['#e01b24', '#1a5fb4', '#26a269', '#9141ac', '#e66100', '#00a3a3', '#c64600', '#333333'];
+const CFG_KEY = 'plan_editor_cfg_v1', DRAFT_KEY = 'plan_editor_draft_v1';
+const OSRM = pts => 'https://router.project-osrm.org/route/v1/driving/' + pts.map(p => p[0].toFixed(6) + ',' + p[1].toFixed(6)).join(';') + '?overview=full&geometries=geojson';
+const GSI_ADDR = q => 'https://msearch.gsi.go.jp/address-search/AddressSearch?q=' + encodeURIComponent(q);
+
+let cfg = { owner: 'awrbmzk', repo: 'hakuchizu-navi', token: '' };
+try { Object.assign(cfg, JSON.parse(localStorage.getItem(CFG_KEY) || '{}')); } catch (e) {}
+let plans = [];          // { id, name, color, snap, waypoints, coords, km }
+let sel = null;          // 選択中の道の id
+let editing = null;      // 編集中の道（コピー）
+let dirty = false, fileSha = null;
+
+const status = (t, cls) => { $('status').textContent = t || ''; $('status').className = cls || ''; };
+const dist = (a, b) => { const R = 6371000, t = Math.PI / 180, dLat = (b[1] - a[1]) * t, dLng = (b[0] - a[0]) * t;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a[1] * t) * Math.cos(b[1] * t) * Math.sin(dLng / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(h)); };
+const lineKm = c => { let m = 0; for (let i = 1; i < c.length; i++) m += dist(c[i - 1], c[i]); return m / 1000; };
+const esc = t => String(t).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const uid = () => 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+const map = new maplibregl.Map({ container: 'map', center: [139.342, 36.412], zoom: 12, attributionControl: false,
+  style: { version: 8,
+    sources: {
+      gsi: { type: 'vector', tiles: ['https://cyberjapandata.gsi.go.jp/xyz/experimental_bvmap/{z}/{x}/{y}.pbf'], minzoom: 4, maxzoom: 16 },
+      plans: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
+      edit: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } }
+    },
+    layers: [
+      { id: 'bg', type: 'background', paint: { 'background-color': '#fff' } },
+      { id: 'water', type: 'fill', source: 'gsi', 'source-layer': 'waterarea', layout: { visibility: 'none' }, paint: { 'fill-color': '#d6e9f7' } },
+      { id: 'river', type: 'line', source: 'gsi', 'source-layer': 'river', layout: { visibility: 'none' }, paint: { 'line-color': '#4a8cc9', 'line-width': 1.2 } },
+      { id: 'bldg', type: 'fill', source: 'gsi', 'source-layer': 'building', layout: { visibility: 'none' }, paint: { 'fill-color': '#e4e4e4', 'fill-outline-color': '#8c8c8c' } },
+      { id: 'road', type: 'line', source: 'gsi', 'source-layer': 'road', layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': '#444', 'line-width': ['interpolate', ['linear'], ['zoom'],
+          10, ['match', ['to-number', ['get', 'rnkWidth'], -1], 4, 1.2, 3, 0.9, 2, 0.6, 0.35],
+          17, ['match', ['to-number', ['get', 'rnkWidth'], -1], 4, 6, 3, 4.5, 2, 3, 1, 2, 1.5]] } },
+      { id: 'rail', type: 'line', source: 'gsi', 'source-layer': 'railway', filter: ['==', ['geometry-type'], 'LineString'], paint: { 'line-color': '#222', 'line-width': 2.5 } },
+      { id: 'rail-dash', type: 'line', source: 'gsi', 'source-layer': 'railway', filter: ['==', ['geometry-type'], 'LineString'], paint: { 'line-color': '#fff', 'line-width': 1.2, 'line-dasharray': [4, 4] } },
+      { id: 'pref', type: 'line', source: 'gsi', 'source-layer': 'boundary', filter: ['==', ['to-number', ['get', 'ftCode']], 1211], paint: { 'line-color': '#000', 'line-width': 4, 'line-dasharray': [7, 2, 1, 2] } },
+      { id: 'muni', type: 'line', source: 'gsi', 'source-layer': 'boundary', filter: ['==', ['to-number', ['get', 'ftCode']], 1212], paint: { 'line-color': '#000', 'line-width': 3, 'line-dasharray': [6, 2, 1, 2, 1, 2] } },
+      { id: 'plans-case', type: 'line', source: 'plans', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#fff', 'line-width': ['case', ['get', 'sel'], 12, 9] } },
+      { id: 'plans', type: 'line', source: 'plans', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': ['get', 'color'], 'line-width': ['case', ['get', 'sel'], 8, 6], 'line-opacity': 0.85 } },
+      { id: 'edit-line', type: 'line', source: 'edit', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': ['get', 'color'], 'line-width': 7, 'line-opacity': 0.9 } }
+    ] } });
+map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left');
+
+// ---------- 表示 ----------
+const LAYERS = { lBldg: ['bldg'], lWater: ['water', 'river'], lRail: ['rail', 'rail-dash'] };
+function applyLayers() { for (const [k, ids] of Object.entries(LAYERS)) ids.forEach(id => map.setLayoutProperty(id, 'visibility', $(k).checked ? 'visible' : 'none')); }
+Object.keys(LAYERS).forEach(k => $(k).addEventListener('change', applyLayers));
+
+// ---------- 道の一覧と描画 ----------
+function toGeoJSON() {
+  return { type: 'FeatureCollection', features: plans.map(p => ({ type: 'Feature',
+    properties: { id: p.id, name: p.name, color: p.color, snap: p.snap, waypoints: p.waypoints, km: Math.round(p.km * 100) / 100 },
+    geometry: { type: 'LineString', coordinates: p.coords.map(c => [Math.round(c[0] * 1e6) / 1e6, Math.round(c[1] * 1e6) / 1e6]) } })) };
+}
+function fromGeoJSON(g) {
+  return (g.features || []).filter(f => f.geometry && f.geometry.type === 'LineString').map(f => {
+    const pr = f.properties || {};
+    return { id: pr.id || uid(), name: pr.name || '名前なし', color: pr.color || COLORS[0], snap: pr.snap !== false,
+      waypoints: Array.isArray(pr.waypoints) && pr.waypoints.length ? pr.waypoints : [f.geometry.coordinates[0], f.geometry.coordinates[f.geometry.coordinates.length - 1]],
+      coords: f.geometry.coordinates, km: lineKm(f.geometry.coordinates) };
+  });
+}
+function drawPlans() {
+  const s = map.getSource('plans'); if (!s) return;
+  s.setData({ type: 'FeatureCollection', features: plans.filter(p => !editing || p.id !== editing.id).map(p => ({ type: 'Feature',
+    properties: { id: p.id, color: p.color, sel: p.id === sel }, geometry: { type: 'LineString', coordinates: p.coords } })) });
+}
+function renderList() {
+  $('list').innerHTML = plans.length ? '' : '<div class="note">まだありません。「＋ 新しい道を描く」から始めてください。</div>';
+  for (const p of plans) {
+    const d = document.createElement('div'); d.className = 'plan' + (p.id === sel ? ' sel' : '');
+    d.innerHTML = `<span class="sw" style="background:${esc(p.color)}"></span><span class="nm">${esc(p.name)}</span><span class="km">${p.km.toFixed(1)} km</span><button>編集</button>`;
+    d.onclick = (e) => { if (e.target.tagName === 'BUTTON') { startEdit(p); return; } selectPlan(p.id, true); };
+    $('list').appendChild(d);
+  }
+  $('bSave').textContent = dirty ? 'GitHubに保存（未保存あり）' : 'GitHubに保存';
+  try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ dirty, data: toGeoJSON() })); } catch (e) {}
+}
+function fitCoords(c) { const b = new maplibregl.LngLatBounds(); c.forEach(x => b.extend(x)); map.fitBounds(b, { padding: 60, maxZoom: 15, duration: 600 }); }
+function selectPlan(id, fit) { sel = id; drawPlans(); renderList(); const p = plans.find(x => x.id === id); if (p && fit) fitCoords(p.coords); }
+map.on('click', 'plans', (e) => { if (editing) return; const id = e.features[0].properties.id; selectPlan(id, false); });
+map.on('mouseenter', 'plans', () => { if (!editing) map.getCanvas().style.cursor = 'pointer'; });
+map.on('mouseleave', 'plans', () => { map.getCanvas().style.cursor = editing ? 'crosshair' : ''; });
+
+// ---------- 編集 ----------
+let wpMarkers = [], routeReq = 0, routeTimer = null, pending = null;
+function colorPicker() {
+  $('eColors').innerHTML = '';
+  COLORS.forEach(c => { const s = document.createElement('span'); s.style.background = c; if (editing.color === c) s.className = 'on';
+    s.onclick = () => { editing.color = c; colorPicker(); drawEdit(); }; $('eColors').appendChild(s); });
+}
+function startEdit(p) {
+  editing = p ? JSON.parse(JSON.stringify(p)) : { id: uid(), name: '', color: COLORS[plans.length % COLORS.length], snap: true, waypoints: [], coords: [], km: 0, isNew: true };
+  sel = editing.id;
+  $('edit').style.display = 'block'; $('bNew').disabled = true; $('eDel').style.display = editing.isNew ? 'none' : '';
+  $('eName').value = editing.name; document.querySelector(`input[name=mode][value=${editing.snap ? 'snap' : 'line'}]`).checked = true;
+  colorPicker(); $('hint').style.display = 'block'; map.getCanvas().style.cursor = 'crosshair';
+  drawPlans(); drawMarkers(); drawEdit();
+  if (!editing.isNew && editing.coords.length) fitCoords(editing.coords);
+}
+function endEdit() {
+  editing = null; wpMarkers.forEach(m => m.remove()); wpMarkers = [];
+  $('edit').style.display = 'none'; $('bNew').disabled = false; $('hint').style.display = 'none'; map.getCanvas().style.cursor = '';
+  map.getSource('edit').setData({ type: 'FeatureCollection', features: [] }); drawPlans(); renderList();
+}
+function drawEdit() {
+  const c = editing.coords.length > 1 ? editing.coords : editing.waypoints;
+  map.getSource('edit').setData({ type: 'FeatureCollection', features: c.length > 1 ? [{ type: 'Feature', properties: { color: editing.color }, geometry: { type: 'LineString', coordinates: c } }] : [] });
+  $('eInfo').textContent = `点 ${editing.waypoints.length} 個・約 ${lineKm(c).toFixed(1)} km`;
+}
+function drawMarkers() {
+  wpMarkers.forEach(m => m.remove()); wpMarkers = [];
+  editing.waypoints.forEach((w, i) => {
+    const el = document.createElement('div'); el.className = 'wp' + (i === 0 ? ' first' : i === editing.waypoints.length - 1 ? ' last' : '');
+    const m = new maplibregl.Marker({ element: el, draggable: true }).setLngLat(w).addTo(map);
+    m.on('dragend', () => { const ll = m.getLngLat(); editing.waypoints[i] = [ll.lng, ll.lat]; recompute(); });
+    el.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); editing.waypoints.splice(i, 1); drawMarkers(); recompute(); });
+    wpMarkers.push(m);
+  });
+}
+function recompute() {
+  clearTimeout(routeTimer);
+  let done; pending = new Promise(r => done = r);
+  routeTimer = setTimeout(async () => { try {
+    const wps = editing.waypoints;
+    if (wps.length < 2) { editing.coords = wps.slice(); drawEdit(); return; }
+    if (!editing.snap) { editing.coords = wps.slice(); drawEdit(); return; }
+    const my = ++routeReq; $('eInfo').textContent = '道路に沿って計算中…';
+    try {
+      const j = await fetch(OSRM(wps)).then(r => r.json());
+      if (my !== routeReq || !editing) return;
+      if (j.code !== 'Ok') throw new Error(j.code);
+      editing.coords = j.routes[0].geometry.coordinates;
+    } catch (e) { if (!editing) return; editing.coords = wps.slice(); status('道路に沿った線を計算できませんでした（まっすぐでつないでいます）：' + e.message, 'err'); }
+    drawEdit();
+  } finally { done(); } }, 250);
+}
+map.on('click', (e) => {
+  if (!editing) return;
+  editing.waypoints.push([e.lngLat.lng, e.lngLat.lat]); drawMarkers(); recompute();
+});
+$('bNew').onclick = () => startEdit(null);
+$('eUndo').onclick = () => { if (!editing || !editing.waypoints.length) return; editing.waypoints.pop(); drawMarkers(); recompute(); };
+document.querySelectorAll('input[name=mode]').forEach(r => r.onchange = () => { if (!editing) return; editing.snap = document.querySelector('input[name=mode]:checked').value === 'snap'; recompute(); });
+$('eName').oninput = () => { if (editing) editing.name = $('eName').value; };
+$('eCancel').onclick = () => endEdit();
+$('eDone').onclick = async () => {
+  if (!editing) return;
+  if (editing.waypoints.length < 2) { status('点を2つ以上クリックしてください。', 'err'); return; }
+  if (pending) { $('eInfo').textContent = '計算の終わりを待っています…'; await pending; }
+  const p = { id: editing.id, name: editing.name.trim() || `走りたい道 ${plans.length + 1}`, color: editing.color, snap: editing.snap,
+    waypoints: editing.waypoints, coords: editing.coords.length > 1 ? editing.coords : editing.waypoints };
+  p.km = lineKm(p.coords);
+  const i = plans.findIndex(x => x.id === p.id); if (i >= 0) plans[i] = p; else plans.push(p);
+  dirty = true; sel = p.id; endEdit(); status('「GitHubに保存」を押すとスマホに送られます。');
+};
+let delArmed = false;
+$('eDel').onclick = () => {
+  if (!editing) return;
+  if (!delArmed) { delArmed = true; $('eDel').textContent = 'もう一度押すと削除'; setTimeout(() => { delArmed = false; $('eDel').textContent = 'この道を削除'; }, 3000); return; }
+  delArmed = false; $('eDel').textContent = 'この道を削除';
+  plans = plans.filter(x => x.id !== editing.id); dirty = true; sel = null; endEdit();
+};
+document.addEventListener('keydown', (e) => {
+  if (!editing || ['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); $('eUndo').onclick(); }
+  if (e.key === 'Enter') $('eDone').onclick();
+  if (e.key === 'Escape') endEdit();
+});
+
+// ---------- 場所の検索 ----------
+$('sform').onsubmit = async (e) => {
+  e.preventDefault(); const q = $('sq').value.trim(); if (!q) return;
+  $('sres').innerHTML = '<div>検索中…</div>';
+  try {
+    const r = await fetch(GSI_ADDR(q)).then(r => r.json());
+    $('sres').innerHTML = r.length ? '' : '<div>見つかりませんでした</div>';
+    r.slice(0, 10).forEach(f => { const d = document.createElement('div'); d.textContent = f.properties.title;
+      d.onclick = () => map.flyTo({ center: f.geometry.coordinates, zoom: 15 }); $('sres').appendChild(d); });
+  } catch (err) { $('sres').innerHTML = '<div>検索できませんでした</div>'; }
+};
+
+// ---------- GitHub との読み書き ----------
+const API = () => `https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/contents/plan.geojson`;
+const b64encode = s => { const b = new TextEncoder().encode(s); let bin = ''; for (let i = 0; i < b.length; i += 0x8000) bin += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(bin); };
+const b64decode = s => new TextDecoder().decode(Uint8Array.from(atob(s.replace(/\n/g, '')), c => c.charCodeAt(0)));
+const headers = () => Object.assign({ 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' }, cfg.token ? { 'Authorization': 'Bearer ' + cfg.token } : {});
+async function loadFromGitHub(quiet) {
+  if (!quiet) status('読み込み中…');
+  try {
+    const r = await fetch(API() + '?ref=main&t=' + Date.now(), { headers: headers(), cache: 'no-store' });
+    if (r.status === 404) { fileSha = null; if (!quiet) status('まだ保存された道はありません。'); return false; }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json(); fileSha = j.sha;
+    plans = fromGeoJSON(JSON.parse(b64decode(j.content))); dirty = false; sel = null;
+    drawPlans(); renderList(); status(`GitHubから ${plans.length} 本読み込みました。`, 'ok'); return true;
+  } catch (e) { status('読み込めませんでした：' + e.message, 'err'); return false; }
+}
+$('bReload').onclick = () => { if (dirty && !confirmLose()) return; loadFromGitHub(); };
+let loseArmed = false;
+function confirmLose() { if (loseArmed) { loseArmed = false; return true; } loseArmed = true; status('保存していない変更があります。もう一度押すと捨てて読み込み直します。', 'err'); setTimeout(() => loseArmed = false, 4000); return false; }
+$('bSave').onclick = async () => {
+  if (editing) { status('編集中の道を「決定」してから保存してください。', 'err'); return; }
+  if (!cfg.token) { $('setup').open = true; status('先に「GitHubの設定」でトークンを入れてください。', 'err'); return; }
+  $('bSave').disabled = true; status('保存中…');
+  try {
+    // 最新の sha を取り直す（ほかの所で更新されていても上書きできるように）
+    const cur = await fetch(API() + '?ref=main&t=' + Date.now(), { headers: headers(), cache: 'no-store' });
+    fileSha = cur.ok ? (await cur.json()).sha : null;
+    const body = { message: `走りたい道を更新（${plans.length}本）`, content: b64encode(JSON.stringify(toGeoJSON())), branch: 'main' };
+    if (fileSha) body.sha = fileSha;
+    const r = await fetch(API(), { method: 'PUT', headers: Object.assign({ 'Content-Type': 'application/json' }, headers()), body: JSON.stringify(body) });
+    if (r.status === 401 || r.status === 403) throw new Error('トークンが正しくないか、書き込み権限がありません（' + r.status + '）');
+    if (r.status === 404) throw new Error('リポジトリが見つかりません。ユーザー名・リポジトリ名とトークンの対象を確認してください');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    fileSha = (await r.json()).content.sha; dirty = false; renderList();
+    status(`保存しました（${plans.length}本）。1〜2分でスマホに反映されます。`, 'ok');
+  } catch (e) { status('保存できませんでした：' + e.message, 'err'); }
+  $('bSave').disabled = false;
+};
+
+// ---------- 設定 ----------
+$('gOwner').value = cfg.owner; $('gRepo').value = cfg.repo; $('gToken').value = cfg.token ? '••••••••（保存済み）' : '';
+$('gToken').onfocus = () => { if ($('gToken').value.startsWith('••')) $('gToken').value = ''; };
+$('gSaveCfg').onclick = () => {
+  cfg.owner = $('gOwner').value.trim(); cfg.repo = $('gRepo').value.trim();
+  const t = $('gToken').value.trim(); if (t && !t.startsWith('••')) cfg.token = t;
+  try { localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); } catch (e) {}
+  $('gToken').value = cfg.token ? '••••••••（保存済み）' : ''; status('設定を保存しました。', 'ok'); loadFromGitHub(true);
+};
+$('gForget').onclick = () => { cfg.token = ''; try { localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); } catch (e) {} $('gToken').value = ''; status('トークンを消しました。'); };
+window.addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+
+// ---------- 起動 ----------
+map.on('load', async () => {
+  applyLayers();
+  let draft = null; try { draft = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null'); } catch (e) {}
+  if (draft && draft.dirty) { plans = fromGeoJSON(draft.data); dirty = true; drawPlans(); renderList(); status('前回保存していなかった変更を復元しました。'); }
+  else { renderList(); const ok = await loadFromGitHub(true); if (!ok && !cfg.token) { $('setup').open = true; status('はじめに「GitHubの設定」でトークンを入れてください（入れなくても描くことはできます）。'); } }
+  if (plans.length) fitCoords(plans.flatMap(p => p.coords));
+});
+}
+</script>
+</body>
+</html>

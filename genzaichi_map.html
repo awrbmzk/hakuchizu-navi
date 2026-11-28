@@ -44,6 +44,13 @@
   #obar > div { height: 100%; width: 0; background: #1a5fb4; }
   #net { position: absolute; left: calc(env(safe-area-inset-left) + 10px); top: calc(env(safe-area-inset-top) + 14px);
     font-size: 12px; font-weight: bold; padding: 3px 8px; border-radius: 10px; background: #c01c28; color: #fff; display: none; }
+  #trk { position: absolute; left: 0; right: 0; bottom: 0; z-index: 9; background: #fff; border-radius: 16px 16px 0 0;
+    box-shadow: 0 -2px 10px rgba(0,0,0,.2); padding: 16px 18px calc(env(safe-area-inset-bottom) + 16px); display: none; max-height: 75vh; overflow-y: auto; }
+  #trk h2 { font-size: 17px; margin: 0 0 8px; }
+  #trk .row { display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; }
+  #trk button { font-size: 16px; padding: 10px 14px; border-radius: 10px; border: 1px solid #999; background: #fff; }
+  #trk button.main { background: #1a5fb4; color: #fff; border-color: #1a5fb4; }
+  #trk .info { font-size: 13px; color: #444; line-height: 1.6; }
   #sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 8; background: #fff; border-radius: 16px 16px 0 0;
     box-shadow: 0 -2px 10px rgba(0,0,0,.2); padding: 14px 18px calc(env(safe-area-inset-bottom) + 14px); display: none; }
   #sheet .t { font-size: 15px; margin-bottom: 10px; }
@@ -100,7 +107,7 @@
   <button id="bFollow" class="on">追従</button>
   <button id="bHead">北上</button>
   <button id="bTrack" class="on">軌跡</button>
-  <button id="bClear">軌跡<br>消去</button>
+  <button id="bClear">記録</button>
   <button id="bWake">画面<br>常時</button>
   <button id="bBg">背景</button>
   <button id="bOff">オフ<br>ライン</button>
@@ -110,6 +117,7 @@
   <label><input type="checkbox" id="lBldg"> 建物</label>
   <label><input type="checkbox" id="lWater"> 川・水域</label>
   <label><input type="checkbox" id="lRail"> 鉄道</label>
+  <label><input type="checkbox" id="lHist"> 走った道（これまで全部）</label>
 </div>
 <div id="bgp">
   <label><input type="radio" name="bg" value="none" checked>なし（白地図だけ）</label>
@@ -132,6 +140,29 @@
   </form>
   <div id="sinfo">住所は国土地理院、施設名はOpenStreetMapで検索します（電波が必要です）。</div>
   <ul id="sres"></ul>
+</div>
+
+<div id="trk">
+  <h2>走行記録</h2>
+  <div class="info" id="tInfo"></div>
+  <div class="row">
+    <button class="main" id="tGpx">GPXで保存</button>
+    <button id="tShare">GPXを共有</button>
+  </div>
+  <div class="row">
+    <button id="tImport">GPXを読み込んで表示</button>
+    <button id="tImpClear" style="display:none">読み込んだ軌跡を消す</button>
+    <input id="tFile" type="file" accept=".gpx,application/gpx+xml,application/xml,text/xml" style="display:none">
+  </div>
+  <div class="row">
+    <button id="tClear">記録を消す</button>
+    <button id="tHistClear">走った道を全部消す</button>
+    <button id="tClose">閉じる</button>
+  </div>
+  <p class="info">
+    ・画面を消したり別のアプリに切り替えたりした間は、ブラウザの仕組み上、記録が止まります（再開すると別の区間として続きを記録します）。<br>
+    ・画面を消しても記録し続けたいときは、バックグラウンドで記録できるGPS記録アプリで録り、そのGPXをここで読み込むと白地図の上に表示できます。
+  </p>
 </div>
 
 <div id="sheet">
@@ -237,7 +268,10 @@ const STYLE = {
   version: 8,
   sources: {
     gsi: { type: 'vector', tiles: ['gsic://{z}/{x}/{y}'], minzoom: 4, maxzoom: MAXZ },
-    track: { type: 'geojson', data: { type: 'Feature', geometry: { type: 'LineString', coordinates: [] } } },
+    track: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
+    imported: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
+    histOld: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
+    histNow: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
     accuracy: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
     route: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } }
   },
@@ -276,6 +310,12 @@ const STYLE = {
     { id: 'direct', type: 'line', source: 'route', filter: ['==', ['get', 'kind'], 'direct'],
       paint: { 'line-color': '#1a73e8', 'line-width': 3, 'line-dasharray': [2, 2] } },
     { id: 'acc', type: 'fill', source: 'accuracy', paint: { 'fill-color': '#1a73e8', 'fill-opacity': 0.12 } },
+    { id: 'histOld', type: 'line', source: 'histOld', layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#ff7a00', 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 3, 16, 7], 'line-opacity': 0.55 } },
+    { id: 'histNow', type: 'line', source: 'histNow', layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#ff7a00', 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 3, 16, 7], 'line-opacity': 0.55 } },
+    { id: 'imported', type: 'line', source: 'imported', layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#9141ac', 'line-width': 4, 'line-opacity': 0.75 } },
     { id: 'track', type: 'line', source: 'track', layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: { 'line-color': '#e01b24', 'line-width': 4, 'line-opacity': 0.75 } }
   ]
@@ -318,11 +358,24 @@ function bearing(a, b) {
   const x = Math.cos(a[1] * t) * Math.sin(b[1] * t) - Math.sin(a[1] * t) * Math.cos(b[1] * t) * Math.cos((b[0] - a[0]) * t);
   return (Math.atan2(y, x) / t + 360) % 360;
 }
+const GAP_MS = 2 * 60 * 1000;   // 2分以上あいたら別の区間
+// 記録を区間ごとに分ける（時刻のない古い記録は1区間）
+function segments(pts) {
+  const segs = []; let cur = [];
+  for (const p of pts) {
+    const prev = cur[cur.length - 1];
+    if (prev && p[2] && prev[2] && p[2] - prev[2] > GAP_MS) { segs.push(cur); cur = []; }
+    cur.push(p);
+  }
+  if (cur.length) segs.push(cur);
+  return segs;
+}
 function drawTrack() {
   const s = map.getSource('track'); if (!s) return;
-  s.setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: showTrack ? track : [] } });
+  const lines = showTrack ? segments(track).filter(g => g.length > 1).map(g => g.map(p => [p[0], p[1]])) : [];
+  s.setData({ type: 'FeatureCollection', features: lines.length ? [{ type: 'Feature', properties: {}, geometry: { type: 'MultiLineString', coordinates: lines } }] : [] });
 }
-function saveTrack() { try { localStorage.setItem(TRACK_KEY, JSON.stringify(track.slice(-20000))); } catch (e) {} }
+function saveTrack() { try { localStorage.setItem(TRACK_KEY, JSON.stringify(track.slice(-40000))); } catch (e) {} }
 
 function onPos(p) {
   const { longitude: lng, latitude: lat, accuracy, speed, heading } = p.coords;
@@ -344,7 +397,10 @@ function onPos(p) {
   const acc = map.getSource('accuracy'); if (acc) acc.setData({ type: 'FeatureCollection', features: [circle(lng, lat, accuracy)] });
 
   // 軌跡：精度が悪すぎる点と、ほぼ動いていない点は記録しない
-  if (accuracy < 60 && (!track.length || dist(track[track.length - 1], here) > 5)) { track.push(here); drawTrack(); saveTrack(); }
+  if (accuracy < 60 && (!track.length || dist(track[track.length - 1], here) > 5)) {
+    track.push([lng, lat, p.timestamp, p.coords.altitude != null ? Math.round(p.coords.altitude * 10) / 10 : null]); drawTrack(); saveTrack();
+  }
+  if (accuracy < 60) histAdd(lng, lat, p.timestamp);
 
   if (follow) {
     const opt = { center: here, duration: 800, essential: true };
@@ -383,11 +439,80 @@ $('bFollow').onclick = () => { follow = !follow; setBtn('bFollow', follow);
 $('bHead').onclick = () => { headingUp = !headingUp; $('bHead').textContent = headingUp ? '進行方向' : '北上';
   setBtn('bHead', headingUp); if (!headingUp) map.easeTo({ bearing: 0, duration: 500 }); };
 $('bTrack').onclick = () => { showTrack = !showTrack; setBtn('bTrack', showTrack); drawTrack(); };
-let clearArmed = false;
-$('bClear').onclick = () => {
-  if (!clearArmed) { clearArmed = true; $('bClear').innerHTML = 'もう<br>一度'; setTimeout(() => { clearArmed = false; $('bClear').innerHTML = '軌跡<br>消去'; }, 3000); return; }
-  clearArmed = false; $('bClear').innerHTML = '軌跡<br>消去'; track = []; saveTrack(); drawTrack();
+// ---------- 走行記録（GPX） ----------
+function trackStats() {
+  const segs = segments(track); let m = 0;
+  segs.forEach(g => { for (let i = 1; i < g.length; i++) m += dist(g[i - 1], g[i]); });
+  const ts = track.filter(p => p[2]).map(p => p[2]);
+  const fmt = t => { const d = new Date(t); return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`; };
+  return { n: track.length, segs: segs.length, km: m / 1000, from: ts.length ? fmt(ts[0]) : '', to: ts.length ? fmt(ts[ts.length - 1]) : '' };
+}
+const xmlEsc = t => String(t).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
+function buildGpx() {
+  const name = '白地図ナビ 走行記録 ' + new Date().toLocaleString('ja-JP');
+  const segXml = segments(track).map(g => '    <trkseg>\n' + g.map(p =>
+    `      <trkpt lat="${p[1].toFixed(7)}" lon="${p[0].toFixed(7)}">` +
+    (p[3] != null ? `<ele>${p[3]}</ele>` : '') + (p[2] ? `<time>${new Date(p[2]).toISOString()}</time>` : '') + '</trkpt>').join('\n') + '\n    </trkseg>').join('\n');
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="hakuchizu-navi" xmlns="http://www.topografix.com/GPX/1/1">\n` +
+    `  <metadata><name>${xmlEsc(name)}</name><time>${new Date().toISOString()}</time></metadata>\n` +
+    `  <trk><name>${xmlEsc(name)}</name>\n${segXml}\n  </trk>\n</gpx>\n`;
+}
+function gpxFileName() {
+  const d = new Date(), z = n => String(n).padStart(2, '0');
+  return `track_${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}_${z(d.getHours())}${z(d.getMinutes())}.gpx`;
+}
+function showTrk() {
+  const st = trackStats();
+  $('tInfo').textContent = st.n ? `記録 ${st.n.toLocaleString()} 点・約 ${st.km.toFixed(1)} km・${st.segs} 区間` + (st.from ? `（${st.from} 〜 ${st.to}）` : '') : 'まだ記録がありません。「開始」を押して走ると記録されます。';
+  const hs = histStats();
+  $('tInfo').textContent += `\n走った道（これまで全部）：${hs.days} 日分・約 ${hs.km.toFixed(1)} km`;
+  $('tInfo').style.whiteSpace = 'pre-line';
+  $('trk').style.display = 'block';
+}
+$('bClear').onclick = showTrk;
+$('tClose').onclick = () => { $('trk').style.display = 'none'; };
+$('tGpx').onclick = () => {
+  if (!track.length) return;
+  const url = URL.createObjectURL(new Blob([buildGpx()], { type: 'application/gpx+xml' }));
+  const a = document.createElement('a'); a.href = url; a.download = gpxFileName(); document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
 };
+$('tShare').onclick = async () => {
+  if (!track.length) return;
+  const file = new File([buildGpx()], gpxFileName(), { type: 'application/gpx+xml' });
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] })) await navigator.share({ files: [file], title: '走行記録' });
+    else $('tGpx').onclick();
+  } catch (e) { if (e.name !== 'AbortError') $('tGpx').onclick(); }
+};
+let tClearArmed = false;
+$('tClear').onclick = () => {
+  if (!tClearArmed) { tClearArmed = true; $('tClear').textContent = 'もう一度押すと消します'; setTimeout(() => { tClearArmed = false; $('tClear').textContent = '記録を消す'; }, 3000); return; }
+  tClearArmed = false; $('tClear').textContent = '記録を消す'; track = []; saveTrack(); drawTrack(); showTrk();
+};
+// ほかのアプリで録ったGPXを読み込んで表示（スマホ内だけで処理）
+$('tImport').onclick = () => $('tFile').click();
+$('tFile').onchange = async () => {
+  const f = $('tFile').files[0]; if (!f) return;
+  try {
+    const doc = new DOMParser().parseFromString(await f.text(), 'application/xml');
+    const lines = [];
+    const grab = (parents, ptTag) => parents.forEach(par => {
+      const pts = [...par.getElementsByTagName(ptTag)].map(e => [parseFloat(e.getAttribute('lon')), parseFloat(e.getAttribute('lat'))]).filter(c => isFinite(c[0]) && isFinite(c[1]));
+      if (pts.length > 1) lines.push(pts);
+    });
+    grab([...doc.getElementsByTagName('trkseg')], 'trkpt');
+    grab([...doc.getElementsByTagName('rte')], 'rtept');
+    if (!lines.length) { $('tInfo').textContent = 'このファイルから軌跡を読み取れませんでした。'; return; }
+    map.getSource('imported').setData({ type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'MultiLineString', coordinates: lines } }] });
+    const b = new maplibregl.LngLatBounds(); lines.flat().forEach(c => b.extend(c));
+    follow = false; setBtn('bFollow', false); map.fitBounds(b, { padding: 60, duration: 800 });
+    $('tImpClear').style.display = ''; $('trk').style.display = 'none';
+    msg(`「${f.name}」を紫の線で表示しています。`); setTimeout(() => msg(''), 5000);
+  } catch (e) { $('tInfo').textContent = 'GPXファイルを読み込めませんでした。'; }
+  $('tFile').value = '';
+};
+$('tImpClear').onclick = () => { map.getSource('imported').setData({ type: 'FeatureCollection', features: [] }); $('tImpClear').style.display = 'none'; };
 $('bWake').onclick = async () => { if (wakeLock) { await wakeLock.release(); wakeLock = null; setBtn('bWake', false); } else if ('wakeLock' in navigator) requestWake(); else msg('この端末では画面の常時点灯を設定できません。'); };
 // ---------- 背景地図 ----------
 const BG_KEY = 'hakuchizu_bg_v1';
@@ -562,10 +687,109 @@ function navUpdate(here) {
 // 前回のナビ中に閉じた場合は目的地を復元
 try { const d = JSON.parse(localStorage.getItem(DEST_KEY) || 'null'); if (d) map.on('load', () => startNav(d)); } catch (e) {}
 
+// ---------- 走った道（これまで通った道を日ごとに保存し、ずっと表示） ----------
+// 「記録」（GPX用・消せる）とは別に IndexedDB に保存する。1日ごとに線を間引いて保存するので何年分でも軽い。
+const HIST_DB = 'hakuchizu-history';
+let histDbP = null;
+const histDb = () => histDbP || (histDbP = new Promise((res, rej) => {
+  const r = indexedDB.open(HIST_DB, 1);
+  r.onupgradeneeded = () => r.result.createObjectStore('days');
+  r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+}));
+async function histReq(mode, fn) {
+  const d = await histDb();
+  return new Promise((res, rej) => {
+    const t = d.transaction('days', mode), q = fn(t.objectStore('days'));
+    t.oncomplete = () => res(q ? q.result : undefined); t.onerror = () => rej(t.error);
+  });
+}
+const pad2 = n => String(n).padStart(2, '0');
+const dayKey = t => { const d = new Date(t); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; };
+// 線の間引き（ダグラス・ポーカー法、許容誤差 tol メートル）
+function simplifyLine(pts, tol) {
+  if (pts.length < 3) return pts.slice();
+  const k = Math.cos(pts[0][1] * Math.PI / 180) * 111320, kl = 110540;
+  const keep = new Uint8Array(pts.length); keep[0] = keep[pts.length - 1] = 1;
+  const stack = [[0, pts.length - 1]];
+  while (stack.length) {
+    const [a, b] = stack.pop();
+    const ax = pts[a][0] * k, ay = pts[a][1] * kl, bx = pts[b][0] * k, by = pts[b][1] * kl;
+    const dx = bx - ax, dy = by - ay, L = Math.hypot(dx, dy) || 1e-9;
+    let md = -1, mi = -1;
+    for (let i = a + 1; i < b; i++) {
+      const d = Math.abs(dy * (pts[i][0] * k - ax) - dx * (pts[i][1] * kl - ay)) / L;
+      if (d > md) { md = d; mi = i; }
+    }
+    if (md > tol) { keep[mi] = 1; stack.push([a, mi], [mi, b]); }
+  }
+  return pts.filter((_, i) => keep[i]).map(p => [Math.round(p[0] * 1e6) / 1e6, Math.round(p[1] * 1e6) / 1e6]);
+}
+const hist = {};                 // 日付 → 保存済みの線（[[lng,lat],...] の配列）
+let histDay = null, histRaw = [], histLast = null, histDirty = false, histLastSave = 0, histNowTimer = null, histLoaded = false;
+function histFeatures(days) {
+  return days.filter(d => hist[d] && hist[d].length).map(d => ({ type: 'Feature', properties: { day: d }, geometry: { type: 'MultiLineString', coordinates: hist[d] } }));
+}
+function drawHistOld() { const s = map.getSource('histOld'); if (s) s.setData({ type: 'FeatureCollection', features: histFeatures(Object.keys(hist)) }); }
+function drawHistNow() {
+  const s = map.getSource('histNow'); if (!s) return;
+  const lines = histRaw.filter(g => g.length > 1);
+  s.setData({ type: 'FeatureCollection', features: lines.length ? [{ type: 'Feature', properties: {}, geometry: { type: 'MultiLineString', coordinates: lines } }] : [] });
+}
+async function histSave() {
+  if (!histDirty || !histDay || !histLoaded) return;   // 読み込み前に保存すると前の分を上書きしてしまうため待つ
+  histDirty = false; histLastSave = Date.now();
+  const rec = (hist[histDay] || []).concat(histRaw.map(g => simplifyLine(g, 4)).filter(g => g.length > 1));
+  try { await histReq('readwrite', st => st.put(rec, histDay)); } catch (e) { histDirty = true; }
+}
+function histAdd(lng, lat, t) {
+  const day = dayKey(t || Date.now());
+  if (day !== histDay) {                         // 日付が変わったら、前の日の分を確定して保存
+    if (histDay) { histDirty = true; const prevDay = histDay, raw = histRaw;
+      hist[prevDay] = (hist[prevDay] || []).concat(raw.map(g => simplifyLine(g, 4)).filter(g => g.length > 1));
+      histReq('readwrite', st => st.put(hist[prevDay], prevDay)).catch(() => {}); }
+    histDay = day; histRaw = []; histLast = null; drawHistOld();
+  }
+  const here = [lng, lat];
+  if (!histLast || (t - histLast[2] > GAP_MS) || dist(histLast, here) > 500) histRaw.push([]);   // 途切れ・飛びは別の線に
+  histRaw[histRaw.length - 1].push(here);
+  histLast = [lng, lat, t]; histDirty = true;
+  if (!histNowTimer) histNowTimer = setTimeout(() => { histNowTimer = null; drawHistNow(); }, 3000);
+  if (Date.now() - histLastSave > 30000) histSave();
+}
+async function histLoad() {
+  try {
+    const d = await histDb();
+    await new Promise((res, rej) => {
+      const t = d.transaction('days', 'readonly'), st = t.objectStore('days'), rq = st.openCursor();
+      rq.onsuccess = () => { const c = rq.result; if (c) { hist[c.key] = (hist[c.key] || []).concat(c.value); c.continue(); } };
+      t.oncomplete = res; t.onerror = () => rej(t.error);
+    });
+  } catch (e) {}
+  histLoaded = true; drawHistOld(); histSave();
+}
+function histStats() {
+  let m = 0; const all = Object.values(hist).flat().concat(histRaw);
+  all.forEach(g => { for (let i = 1; i < g.length; i++) m += dist(g[i - 1], g[i]); });
+  const days = new Set(Object.keys(hist).filter(d => hist[d].length)); if (histRaw.some(g => g.length > 1) && histDay) days.add(histDay);
+  return { days: days.size, km: m / 1000 };
+}
+setInterval(histSave, 20000);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') histSave(); });
+window.addEventListener('pagehide', histSave);
+if (map.loaded()) histLoad(); else map.on('load', histLoad);
+let hClearArmed = false;
+$('tHistClear').onclick = async () => {
+  if (!hClearArmed) { hClearArmed = true; $('tHistClear').textContent = 'もう一度押すと全部消します'; setTimeout(() => { hClearArmed = false; $('tHistClear').textContent = '走った道を全部消す'; }, 3000); return; }
+  hClearArmed = false; $('tHistClear').textContent = '走った道を全部消す';
+  try { await histReq('readwrite', st => st.clear()); } catch (e) {}
+  for (const k of Object.keys(hist)) delete hist[k];
+  histRaw = []; histLast = null; histDirty = false; drawHistOld(); drawHistNow(); showTrk();
+};
+
 // ---------- 建物・川の表示切り替え（設定はスマホに記憶） ----------
 const LAYER_KEY = 'hakuchizu_layers_v1';
-const LAYER_GROUPS = { lBldg: ['bldg'], lWater: ['water', 'river', 'lake'], lRail: ['rail', 'rail-dash'] };
-let layerPref = { lBldg: false, lWater: false, lRail: false };
+const LAYER_GROUPS = { lBldg: ['bldg'], lWater: ['water', 'river', 'lake'], lRail: ['rail', 'rail-dash'], lHist: ['histOld', 'histNow'] };
+let layerPref = { lBldg: false, lWater: false, lRail: false, lHist: true };
 try { Object.assign(layerPref, JSON.parse(localStorage.getItem(LAYER_KEY) || '{}')); } catch (e) {}
 function applyLayers() {
   for (const [k, ids] of Object.entries(LAYER_GROUPS)) {

@@ -34,6 +34,8 @@
   .colors span.on { box-shadow: 0 0 0 3px #222; }
   #sres div { padding: 6px 4px; border-bottom: 1px solid #eee; cursor: pointer; font-size: 13px; }
   #sres div:hover { background: #eef4fb; }
+  #bPaint.on { background: #2a7de1; color: #fff; border-color: #2a7de1; }
+  select { font-size: 14px; padding: 4px 6px; }
   .wp { width: 14px; height: 14px; border-radius: 50%; background: #fff; border: 3px solid #1a5fb4; cursor: grab; }
   .wp.first { border-color: #26a269; } .wp.last { border-color: #c01c28; }
   #hint { position: absolute; left: 50%; top: 10px; transform: translateX(-50%); background: rgba(26,95,180,.92); color: #fff;
@@ -51,9 +53,15 @@
     <form id="sform" class="row"><input id="sq" type="search" placeholder="住所・地名（例：桐生市梅田町）"><button>検索</button></form>
     <div id="sres"></div>
 
+    <h2>ストリートビューがある道を塗る</h2>
+    <div class="row"><button id="bPaint">道を塗る：オフ</button><button id="bPaintUndo">1つ戻す</button></div>
+    <div class="note">オンにして白地図の道をクリックすると、その区間が<b style="color:#2a7de1">青</b>く塗られます（もう一度クリックで消えます）。ズーム15以上で使ってください。長い道は下の「＋ 新しい道を描く」で種類を「ストリートビューあり」にしてなぞると早いです。</div>
+    <div class="row"><span id="svInfo" class="note"></span><button class="warn" id="bSvClear" style="padding:3px 8px;font-size:12px">塗った道を全部消す</button></div>
+
     <h2>走りたい道</h2>
     <div class="row"><button class="main" id="bNew">＋ 新しい道を描く</button></div>
     <div id="edit">
+      <div class="row"><label>種類 <select id="eKind"><option value="plan">走りたい道</option><option value="sv">ストリートビューあり（青で塗る）</option></select></label></div>
       <div class="row"><input id="eName" type="text" placeholder="名前（例：梅田の林道）"></div>
       <div class="colors" id="eColors"></div>
       <div class="row">
@@ -104,6 +112,9 @@ const GSI_ADDR = q => 'https://msearch.gsi.go.jp/address-search/AddressSearch?q=
 let cfg = { owner: 'awrbmzk', repo: 'hakuchizu-navi', token: '' };
 try { Object.assign(cfg, JSON.parse(localStorage.getItem(CFG_KEY) || '{}')); } catch (e) {}
 let plans = [];          // { id, name, color, snap, waypoints, coords, km }
+const SV_COLOR = '#2a7de1';
+let svs = [];            // ストリートビューありとして塗った区間 { id, lines: [[[lng,lat],...], ...] }
+let paintMode = false, paintStack = [];
 let sel = null;          // 選択中の道の id
 let editing = null;      // 編集中の道（コピー）
 let dirty = false, fileSha = null;
@@ -120,6 +131,7 @@ const map = new maplibregl.Map({ container: 'map', center: [139.342, 36.412], zo
     sources: {
       gsi: { type: 'vector', tiles: ['https://cyberjapandata.gsi.go.jp/xyz/experimental_bvmap/{z}/{x}/{y}.pbf'], minzoom: 4, maxzoom: 16 },
       plans: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
+      sv: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
       edit: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } }
     },
     layers: [
@@ -135,6 +147,7 @@ const map = new maplibregl.Map({ container: 'map', center: [139.342, 36.412], zo
       { id: 'rail-dash', type: 'line', source: 'gsi', 'source-layer': 'railway', filter: ['==', ['geometry-type'], 'LineString'], paint: { 'line-color': '#fff', 'line-width': 1.2, 'line-dasharray': [4, 4] } },
       { id: 'pref', type: 'line', source: 'gsi', 'source-layer': 'boundary', filter: ['==', ['to-number', ['get', 'ftCode']], 1211], paint: { 'line-color': '#000', 'line-width': 4, 'line-dasharray': [7, 2, 1, 2] } },
       { id: 'muni', type: 'line', source: 'gsi', 'source-layer': 'boundary', filter: ['==', ['to-number', ['get', 'ftCode']], 1212], paint: { 'line-color': '#000', 'line-width': 3, 'line-dasharray': [6, 2, 1, 2, 1, 2] } },
+      { id: 'sv', type: 'line', source: 'sv', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#2a7de1', 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 2.5, 16, 7], 'line-opacity': 0.75 } },
       { id: 'plans-case', type: 'line', source: 'plans', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#fff', 'line-width': ['case', ['get', 'sel'], 12, 9] } },
       { id: 'plans', type: 'line', source: 'plans', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': ['get', 'color'], 'line-width': ['case', ['get', 'sel'], 8, 6], 'line-opacity': 0.85 } },
       { id: 'edit-line', type: 'line', source: 'edit', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': ['get', 'color'], 'line-width': 7, 'line-opacity': 0.9 } }
@@ -148,13 +161,26 @@ function applyLayers() { for (const [k, ids] of Object.entries(LAYERS)) ids.forE
 Object.keys(LAYERS).forEach(k => $(k).addEventListener('change', applyLayers));
 
 // ---------- 道の一覧と描画 ----------
+const r6 = c => [Math.round(c[0] * 1e6) / 1e6, Math.round(c[1] * 1e6) / 1e6];
 function toGeoJSON() {
   return { type: 'FeatureCollection', features: plans.map(p => ({ type: 'Feature',
-    properties: { id: p.id, name: p.name, color: p.color, snap: p.snap, waypoints: p.waypoints, km: Math.round(p.km * 100) / 100 },
-    geometry: { type: 'LineString', coordinates: p.coords.map(c => [Math.round(c[0] * 1e6) / 1e6, Math.round(c[1] * 1e6) / 1e6]) } })) };
+    properties: { kind: 'plan', id: p.id, name: p.name, color: p.color, snap: p.snap, waypoints: p.waypoints, km: Math.round(p.km * 100) / 100 },
+    geometry: { type: 'LineString', coordinates: p.coords.map(r6) } }))
+    .concat(svs.map(v => ({ type: 'Feature', properties: { kind: 'sv', id: v.id }, geometry: { type: 'MultiLineString', coordinates: v.lines.map(l => l.map(r6)) } }))) };
+}
+function svFromGeoJSON(g) {
+  return (g.features || []).filter(f => f.properties && f.properties.kind === 'sv' && f.geometry).map(f => ({ id: f.properties.id || uid(),
+    lines: f.geometry.type === 'MultiLineString' ? f.geometry.coordinates : [f.geometry.coordinates] }));
+}
+function setData(g) { plans = fromGeoJSON(g); svs = svFromGeoJSON(g); }
+function drawSv() {
+  const s = map.getSource('sv'); if (!s) return;
+  s.setData({ type: 'FeatureCollection', features: svs.map(v => ({ type: 'Feature', properties: { id: v.id }, geometry: { type: 'MultiLineString', coordinates: v.lines } })) });
+  let m = 0; svs.forEach(v => v.lines.forEach(l => { m += lineKm(l) * 1000; }));
+  $('svInfo').textContent = `塗った道：${svs.length} 区間・約 ${(m / 1000).toFixed(1)} km`;
 }
 function fromGeoJSON(g) {
-  return (g.features || []).filter(f => f.geometry && f.geometry.type === 'LineString').map(f => {
+  return (g.features || []).filter(f => f.geometry && f.geometry.type === 'LineString' && !(f.properties && f.properties.kind === 'sv')).map(f => {
     const pr = f.properties || {};
     return { id: pr.id || uid(), name: pr.name || '名前なし', color: pr.color || COLORS[0], snap: pr.snap !== false,
       waypoints: Array.isArray(pr.waypoints) && pr.waypoints.length ? pr.waypoints : [f.geometry.coordinates[0], f.geometry.coordinates[f.geometry.coordinates.length - 1]],
@@ -174,6 +200,7 @@ function renderList() {
     d.onclick = (e) => { if (e.target.tagName === 'BUTTON') { startEdit(p); return; } selectPlan(p.id, true); };
     $('list').appendChild(d);
   }
+  drawSv();
   $('bSave').textContent = dirty ? 'GitHubに保存（未保存あり）' : 'GitHubに保存';
   try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ dirty, data: toGeoJSON() })); } catch (e) {}
 }
@@ -194,13 +221,15 @@ function startEdit(p) {
   editing = p ? JSON.parse(JSON.stringify(p)) : { id: uid(), name: '', color: COLORS[plans.length % COLORS.length], snap: true, waypoints: [], coords: [], km: 0, isNew: true };
   sel = editing.id;
   $('edit').style.display = 'block'; $('bNew').disabled = true; $('eDel').style.display = editing.isNew ? 'none' : '';
+  editing.kind = editing.kind || 'plan'; $('eKind').value = editing.kind; $('eKind').disabled = !editing.isNew;
   $('eName').value = editing.name; document.querySelector(`input[name=mode][value=${editing.snap ? 'snap' : 'line'}]`).checked = true;
-  colorPicker(); $('hint').style.display = 'block'; map.getCanvas().style.cursor = 'crosshair';
+  colorPicker(); $('hint').textContent = 'クリックで点を追加'; $('hint').style.display = 'block'; map.getCanvas().style.cursor = 'crosshair';
+  applyKindUI(false);
   drawPlans(); drawMarkers(); drawEdit();
   if (!editing.isNew && editing.coords.length) fitCoords(editing.coords);
 }
 function endEdit() {
-  editing = null; wpMarkers.forEach(m => m.remove()); wpMarkers = [];
+  editing = null; $('eName').style.display = ''; $('eColors').style.display = ''; wpMarkers.forEach(m => m.remove()); wpMarkers = [];
   $('edit').style.display = 'none'; $('bNew').disabled = false; $('hint').style.display = 'none'; map.getCanvas().style.cursor = '';
   map.getSource('edit').setData({ type: 'FeatureCollection', features: [] }); drawPlans(); renderList();
 }
@@ -240,15 +269,66 @@ map.on('click', (e) => {
   if (!editing) return;
   editing.waypoints.push([e.lngLat.lng, e.lngLat.lat]); drawMarkers(); recompute();
 });
-$('bNew').onclick = () => startEdit(null);
+$('bNew').onclick = () => { setPaint(false); startEdit(null); };
+// ---------- 道をクリックして塗る ----------
+function setPaint(on) {
+  paintMode = on; $('bPaint').classList.toggle('on', on); $('bPaint').textContent = on ? '道を塗る：オン' : '道を塗る：オフ';
+  map.getCanvas().style.cursor = on ? 'pointer' : (editing ? 'crosshair' : '');
+  $('hint').textContent = 'クリックした道を青く塗ります（もう一度で消す）'; $('hint').style.display = on ? 'block' : 'none';
+}
+$('bPaint').onclick = () => { if (editing) { status('編集中の道を「決定」か「やめる」してから使ってください。', 'err'); return; } setPaint(!paintMode); };
+map.on('click', (e) => {
+  if (!paintMode || editing) return;
+  const p = e.point, box = [[p.x - 6, p.y - 6], [p.x + 6, p.y + 6]];
+  const hit = map.queryRenderedFeatures(box, { layers: ['sv'] });
+  if (hit.length) {                                     // 塗ってある所なら消す
+    const id = hit[0].properties.id, i = svs.findIndex(v => v.id === id);
+    if (i >= 0) { const [v] = svs.splice(i, 1); paintStack.push({ op: 'del', v, i }); dirty = true; renderList(); }
+    return;
+  }
+  if (map.getZoom() < 14) { status('もう少し拡大してから（ズーム15くらい）道をクリックしてください。', 'err'); return; }
+  const roads = map.queryRenderedFeatures(box, { layers: ['road'] });
+  if (!roads.length) { status('そこに道が見つかりませんでした。道の線の上をクリックしてください。'); return; }
+  // クリック位置にいちばん近い道を選ぶ
+  const ll = [e.lngLat.lng, e.lngLat.lat];
+  const segD = (pt, l) => { let b = Infinity; for (let i = 1; i < l.length; i++) { const k = Math.cos(pt[1] * Math.PI / 180);
+    const ax = (l[i - 1][0] - pt[0]) * k, ay = l[i - 1][1] - pt[1], bx = (l[i][0] - pt[0]) * k, by = l[i][1] - pt[1], dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy;
+    let t = L ? -(ax * dx + ay * dy) / L : 0; t = Math.max(0, Math.min(1, t)); b = Math.min(b, Math.hypot(ax + t * dx, ay + t * dy)); } return b; };
+  let best = null, bd = Infinity;
+  for (const f of roads) { const ls = f.geometry.type === 'MultiLineString' ? f.geometry.coordinates : [f.geometry.coordinates];
+    const d = Math.min(...ls.map(l => segD(ll, l))); if (d < bd) { bd = d; best = ls; } }
+  const v = { id: uid(), lines: best.map(l => l.slice()) };
+  svs.push(v); paintStack.push({ op: 'add', v }); dirty = true; renderList(); status('');
+});
+$('bPaintUndo').onclick = () => {
+  const a = paintStack.pop(); if (!a) return;
+  if (a.op === 'add') svs = svs.filter(v => v.id !== a.v.id); else svs.splice(Math.min(a.i, svs.length), 0, a.v);
+  dirty = true; renderList();
+};
+let svClearArmed = false;
+$('bSvClear').onclick = () => {
+  if (!svClearArmed) { svClearArmed = true; $('bSvClear').textContent = 'もう一度押すと全部消す'; setTimeout(() => { svClearArmed = false; $('bSvClear').textContent = '塗った道を全部消す'; }, 3000); return; }
+  svClearArmed = false; $('bSvClear').textContent = '塗った道を全部消す'; svs = []; paintStack = []; dirty = true; renderList();
+};
 $('eUndo').onclick = () => { if (!editing || !editing.waypoints.length) return; editing.waypoints.pop(); drawMarkers(); recompute(); };
 document.querySelectorAll('input[name=mode]').forEach(r => r.onchange = () => { if (!editing) return; editing.snap = document.querySelector('input[name=mode]:checked').value === 'snap'; recompute(); });
 $('eName').oninput = () => { if (editing) editing.name = $('eName').value; };
+function applyKindUI(changed) {
+  if (!editing) return;
+  if (editing.kind === 'sv') { editing.color = SV_COLOR; $('eName').style.display = 'none'; $('eColors').style.display = 'none'; }
+  else { $('eName').style.display = ''; $('eColors').style.display = ''; if (changed) { editing.color = COLORS[plans.length % COLORS.length]; colorPicker(); } }
+  drawEdit();
+}
+$('eKind').onchange = () => { if (!editing) return; editing.kind = $('eKind').value; applyKindUI(true); };
 $('eCancel').onclick = () => endEdit();
 $('eDone').onclick = async () => {
   if (!editing) return;
   if (editing.waypoints.length < 2) { status('点を2つ以上クリックしてください。', 'err'); return; }
   if (pending) { $('eInfo').textContent = '計算の終わりを待っています…'; await pending; }
+  if (editing.kind === 'sv') {
+    const v = { id: editing.id, lines: [editing.coords.length > 1 ? editing.coords : editing.waypoints] };
+    svs.push(v); paintStack.push({ op: 'add', v }); dirty = true; endEdit(); status('ストリートビューありとして青く塗りました。「GitHubに保存」でスマホに送られます。'); return;
+  }
   const p = { id: editing.id, name: editing.name.trim() || `走りたい道 ${plans.length + 1}`, color: editing.color, snap: editing.snap,
     waypoints: editing.waypoints, coords: editing.coords.length > 1 ? editing.coords : editing.waypoints };
   p.km = lineKm(p.coords);
@@ -267,6 +347,11 @@ document.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); $('eUndo').onclick(); }
   if (e.key === 'Enter') $('eDone').onclick();
   if (e.key === 'Escape') endEdit();
+});
+document.addEventListener('keydown', (e) => {
+  if (!paintMode || editing || ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); $('bPaintUndo').onclick(); }
+  if (e.key === 'Escape') setPaint(false);
 });
 
 // ---------- 場所の検索 ----------
@@ -289,12 +374,11 @@ const headers = () => Object.assign({ 'Accept': 'application/vnd.github+json', '
 async function loadFromGitHub(quiet) {
   if (!quiet) status('読み込み中…');
   try {
-    const r = await fetch(API() + '?ref=main&t=' + Date.now(), { headers: headers(), cache: 'no-store' });
+    const r = await fetch(API() + '?ref=main&t=' + Date.now(), { headers: Object.assign(headers(), { 'Accept': 'application/vnd.github.raw+json' }), cache: 'no-store' });
     if (r.status === 404) { fileSha = null; if (!quiet) status('まだ保存された道はありません。'); return false; }
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    const j = await r.json(); fileSha = j.sha;
-    plans = fromGeoJSON(JSON.parse(b64decode(j.content))); dirty = false; sel = null;
-    drawPlans(); renderList(); status(`GitHubから ${plans.length} 本読み込みました。`, 'ok'); return true;
+    setData(JSON.parse(await r.text())); dirty = false; sel = null; paintStack = [];
+    drawPlans(); renderList(); status(`GitHubから 走りたい道 ${plans.length} 本・塗った道 ${svs.length} 区間を読み込みました。`, 'ok'); return true;
   } catch (e) { status('読み込めませんでした：' + e.message, 'err'); return false; }
 }
 $('bReload').onclick = () => { if (dirty && !confirmLose()) return; loadFromGitHub(); };
@@ -308,14 +392,14 @@ $('bSave').onclick = async () => {
     // 最新の sha を取り直す（ほかの所で更新されていても上書きできるように）
     const cur = await fetch(API() + '?ref=main&t=' + Date.now(), { headers: headers(), cache: 'no-store' });
     fileSha = cur.ok ? (await cur.json()).sha : null;
-    const body = { message: `走りたい道を更新（${plans.length}本）`, content: b64encode(JSON.stringify(toGeoJSON())), branch: 'main' };
+    const body = { message: `走りたい道 ${plans.length}本・塗った道 ${svs.length}区間 を更新`, content: b64encode(JSON.stringify(toGeoJSON())), branch: 'main' };
     if (fileSha) body.sha = fileSha;
     const r = await fetch(API(), { method: 'PUT', headers: Object.assign({ 'Content-Type': 'application/json' }, headers()), body: JSON.stringify(body) });
     if (r.status === 401 || r.status === 403) throw new Error('トークンが正しくないか、書き込み権限がありません（' + r.status + '）');
     if (r.status === 404) throw new Error('リポジトリが見つかりません。ユーザー名・リポジトリ名とトークンの対象を確認してください');
     if (!r.ok) throw new Error('HTTP ' + r.status);
     fileSha = (await r.json()).content.sha; dirty = false; renderList();
-    status(`保存しました（${plans.length}本）。1〜2分でスマホに反映されます。`, 'ok');
+    status(`保存しました（走りたい道 ${plans.length}本・塗った道 ${svs.length}区間）。1〜2分でスマホに反映されます。`, 'ok');
   } catch (e) { status('保存できませんでした：' + e.message, 'err'); }
   $('bSave').disabled = false;
 };
@@ -336,9 +420,10 @@ window.addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault()
 map.on('load', async () => {
   applyLayers();
   let draft = null; try { draft = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null'); } catch (e) {}
-  if (draft && draft.dirty) { plans = fromGeoJSON(draft.data); dirty = true; drawPlans(); renderList(); status('前回保存していなかった変更を復元しました。'); }
+  if (draft && draft.dirty) { setData(draft.data); dirty = true; drawPlans(); renderList(); status('前回保存していなかった変更を復元しました。'); }
   else { renderList(); const ok = await loadFromGitHub(true); if (!ok && !cfg.token) { $('setup').open = true; status('はじめに「GitHubの設定」でトークンを入れてください（入れなくても描くことはできます）。'); } }
-  if (plans.length) fitCoords(plans.flatMap(p => p.coords));
+  drawSv();
+  const allC = plans.flatMap(p => p.coords).concat(svs.flatMap(v => v.lines.flat())); if (allC.length) fitCoords(allC);
 });
 }
 </script>

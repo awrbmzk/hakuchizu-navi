@@ -279,17 +279,30 @@ function setPaint(on) {
 }
 $('bPaint').onclick = () => { if (editing) { status('編集中の道を「決定」か「やめる」してから使ってください。', 'err'); return; } setPaint(!paintMode); };
 // クリック位置にいちばん近い道の区間を返す
-function roadAt(pt, lngLat) {
+function roadAt(pt, lngLat, dir) {   // dir: なぞっている向き（画面上の [dx, dy]）。あれば向きの合う道を選ぶ
   const box = [[pt.x - 6, pt.y - 6], [pt.x + 6, pt.y + 6]];
   const roads = map.queryRenderedFeatures(box, { layers: ['road'] });
   if (!roads.length) return null;
   const ll = [lngLat.lng, lngLat.lat];
-  const segD = (q, l) => { let b = Infinity; for (let i = 1; i < l.length; i++) { const k = Math.cos(q[1] * Math.PI / 180);
+  // いちばん近い区間までの距離と、その区間の向き（経度・緯度の差、緯度方向は画面と逆向き）
+  const segD = (q, l) => { let b = Infinity, v = [0, 0]; for (let i = 1; i < l.length; i++) { const k = Math.cos(q[1] * Math.PI / 180);
     const ax = (l[i - 1][0] - q[0]) * k, ay = l[i - 1][1] - q[1], bx = (l[i][0] - q[0]) * k, by = l[i][1] - q[1], dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy;
-    let t = L ? -(ax * dx + ay * dy) / L : 0; t = Math.max(0, Math.min(1, t)); b = Math.min(b, Math.hypot(ax + t * dx, ay + t * dy)); } return b; };
-  let best = null, bd = Infinity;
-  for (const f of roads) { const ls = f.geometry.type === 'MultiLineString' ? f.geometry.coordinates : [f.geometry.coordinates];
-    const d = Math.min(...ls.map(l => segD(ll, l))); if (d < bd) { bd = d; best = ls; } }
+    let t = L ? -(ax * dx + ay * dy) / L : 0; t = Math.max(0, Math.min(1, t)); const d = Math.hypot(ax + t * dx, ay + t * dy);
+    if (d < b) { b = d; v = [dx, -dy]; } } return { d: b, v }; };
+  let best = null, bs = Infinity;
+  for (const f of roads) {
+    const ls = f.geometry.type === 'MultiLineString' ? f.geometry.coordinates : [f.geometry.coordinates];
+    for (const l of ls) {
+      const r = segD(ll, l); let score = r.d;
+      if (dir) {
+        const n1 = Math.hypot(...r.v), n2 = Math.hypot(...dir);
+        const cos = n1 && n2 ? Math.abs((r.v[0] * dir[0] + r.v[1] * dir[1]) / (n1 * n2)) : 1;
+        if (cos < 0.7) continue;                         // なぞる向きと45°以上ずれた道（横道）は選ばない
+        score = r.d * (2 - cos);
+      }
+      if (score < bs) { bs = score; best = ls; }
+    }
+  }
   return best;
 }
 const lineKey = ls => ls.map(l => { const a = l[0], b = l[l.length - 1]; return [a[0].toFixed(5), a[1].toFixed(5), b[0].toFixed(5), b[1].toFixed(5), l.length].join(','); }).join('|');
@@ -310,17 +323,20 @@ map.on('click', (e) => {
   svs.push(v); paintStack.push({ op: 'add', v }); dirty = true; renderList(); status('');
 });
 // ドラッグでなぞって塗る（スペースキーを押している間は地図を動かせる）
-let painting = false, stroke = [], strokeStart = null, spaceDown = false;
+let painting = false, stroke = [], strokeStart = null, spaceDown = false, lastPt = null;
 function updatePan() { if (paintMode && !spaceDown) map.dragPan.disable(); else map.dragPan.enable(); }
 map.on('mousedown', (e) => {
   if (!paintMode || editing || spaceDown || e.originalEvent.button !== 0) return;
-  painting = true; stroke = []; strokeStart = e.point;
+  painting = true; stroke = []; strokeStart = e.point; lastPt = e.point;
 });
 map.on('mousemove', (e) => {
   if (!painting) return;
   if (Math.hypot(e.point.x - strokeStart.x, e.point.y - strokeStart.y) < 5 && !stroke.length) return;
   if (map.getZoom() < 14) return;
-  const best = roadAt(e.point, e.lngLat);
+  const dx = e.point.x - lastPt.x, dy = e.point.y - lastPt.y;
+  if (Math.hypot(dx, dy) < 4) return;                    // 少し動いてから向きを決める
+  lastPt = e.point;
+  const best = roadAt(e.point, e.lngLat, [dx, dy]);
   if (!best || alreadyPainted(best)) return;
   const v = { id: uid(), lines: best.map(l => l.slice()) };
   svs.push(v); stroke.push(v); dirty = true; drawSv();

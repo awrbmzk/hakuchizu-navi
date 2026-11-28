@@ -55,7 +55,7 @@
 
     <h2>ストリートビューがある道を塗る</h2>
     <div class="row"><button id="bPaint">道を塗る：オフ</button><button id="bPaintUndo">1つ戻す</button></div>
-    <div class="note">オンにして白地図の道をクリックすると、その区間が<b style="color:#2a7de1">青</b>く塗られます（もう一度クリックで消えます）。ズーム15以上で使ってください。長い道は下の「＋ 新しい道を描く」で種類を「ストリートビューあり」にしてなぞると早いです。</div>
+    <div class="note">オンにして白地図の道をクリック、または<b>ドラッグでなぞる</b>と<b style="color:#2a7de1">青</b>く塗られます（青い道をクリックで消えます）。塗るモード中に地図を動かすときは<b>スペースキーを押しながらドラッグ</b>。ズーム15くらいで使ってください。長い道は下の「＋ 新しい道を描く」で種類を「ストリートビューあり」にしてなぞると早いです。</div>
     <div class="row"><span id="svInfo" class="note"></span><button class="warn" id="bSvClear" style="padding:3px 8px;font-size:12px">塗った道を全部消す</button></div>
 
     <h2>走りたい道</h2>
@@ -274,35 +274,70 @@ $('bNew').onclick = () => { setPaint(false); startEdit(null); };
 function setPaint(on) {
   paintMode = on; $('bPaint').classList.toggle('on', on); $('bPaint').textContent = on ? '道を塗る：オン' : '道を塗る：オフ';
   map.getCanvas().style.cursor = on ? 'pointer' : (editing ? 'crosshair' : '');
-  $('hint').textContent = 'クリックした道を青く塗ります（もう一度で消す）'; $('hint').style.display = on ? 'block' : 'none';
+  $('hint').textContent = 'クリック・ドラッグでなぞった道を青く塗る／青い道をクリックで消す／スペース＋ドラッグで地図を移動'; $('hint').style.display = on ? 'block' : 'none';
+  updatePan();
 }
 $('bPaint').onclick = () => { if (editing) { status('編集中の道を「決定」か「やめる」してから使ってください。', 'err'); return; } setPaint(!paintMode); };
+// クリック位置にいちばん近い道の区間を返す
+function roadAt(pt, lngLat) {
+  const box = [[pt.x - 6, pt.y - 6], [pt.x + 6, pt.y + 6]];
+  const roads = map.queryRenderedFeatures(box, { layers: ['road'] });
+  if (!roads.length) return null;
+  const ll = [lngLat.lng, lngLat.lat];
+  const segD = (q, l) => { let b = Infinity; for (let i = 1; i < l.length; i++) { const k = Math.cos(q[1] * Math.PI / 180);
+    const ax = (l[i - 1][0] - q[0]) * k, ay = l[i - 1][1] - q[1], bx = (l[i][0] - q[0]) * k, by = l[i][1] - q[1], dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy;
+    let t = L ? -(ax * dx + ay * dy) / L : 0; t = Math.max(0, Math.min(1, t)); b = Math.min(b, Math.hypot(ax + t * dx, ay + t * dy)); } return b; };
+  let best = null, bd = Infinity;
+  for (const f of roads) { const ls = f.geometry.type === 'MultiLineString' ? f.geometry.coordinates : [f.geometry.coordinates];
+    const d = Math.min(...ls.map(l => segD(ll, l))); if (d < bd) { bd = d; best = ls; } }
+  return best;
+}
+const lineKey = ls => ls.map(l => { const a = l[0], b = l[l.length - 1]; return [a[0].toFixed(5), a[1].toFixed(5), b[0].toFixed(5), b[1].toFixed(5), l.length].join(','); }).join('|');
+function alreadyPainted(ls) { const k = lineKey(ls); return svs.some(v => lineKey(v.lines) === k); }
 map.on('click', (e) => {
   if (!paintMode || editing) return;
-  const p = e.point, box = [[p.x - 6, p.y - 6], [p.x + 6, p.y + 6]];
-  const hit = map.queryRenderedFeatures(box, { layers: ['sv'] });
-  if (hit.length) {                                     // 塗ってある所なら消す
+  const p = e.point, hit = map.queryRenderedFeatures([[p.x - 6, p.y - 6], [p.x + 6, p.y + 6]], { layers: ['sv'] });
+  if (hit.length) {                                     // 塗ってある所をクリックしたら消す
     const id = hit[0].properties.id, i = svs.findIndex(v => v.id === id);
     if (i >= 0) { const [v] = svs.splice(i, 1); paintStack.push({ op: 'del', v, i }); dirty = true; renderList(); }
     return;
   }
   if (map.getZoom() < 14) { status('もう少し拡大してから（ズーム15くらい）道をクリックしてください。', 'err'); return; }
-  const roads = map.queryRenderedFeatures(box, { layers: ['road'] });
-  if (!roads.length) { status('そこに道が見つかりませんでした。道の線の上をクリックしてください。'); return; }
-  // クリック位置にいちばん近い道を選ぶ
-  const ll = [e.lngLat.lng, e.lngLat.lat];
-  const segD = (pt, l) => { let b = Infinity; for (let i = 1; i < l.length; i++) { const k = Math.cos(pt[1] * Math.PI / 180);
-    const ax = (l[i - 1][0] - pt[0]) * k, ay = l[i - 1][1] - pt[1], bx = (l[i][0] - pt[0]) * k, by = l[i][1] - pt[1], dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy;
-    let t = L ? -(ax * dx + ay * dy) / L : 0; t = Math.max(0, Math.min(1, t)); b = Math.min(b, Math.hypot(ax + t * dx, ay + t * dy)); } return b; };
-  let best = null, bd = Infinity;
-  for (const f of roads) { const ls = f.geometry.type === 'MultiLineString' ? f.geometry.coordinates : [f.geometry.coordinates];
-    const d = Math.min(...ls.map(l => segD(ll, l))); if (d < bd) { bd = d; best = ls; } }
+  const best = roadAt(e.point, e.lngLat);
+  if (!best) { status('そこに道が見つかりませんでした。道の線の上をクリックしてください。'); return; }
+  if (alreadyPainted(best)) return;
   const v = { id: uid(), lines: best.map(l => l.slice()) };
   svs.push(v); paintStack.push({ op: 'add', v }); dirty = true; renderList(); status('');
 });
+// ドラッグでなぞって塗る（スペースキーを押している間は地図を動かせる）
+let painting = false, stroke = [], strokeStart = null, spaceDown = false;
+function updatePan() { if (paintMode && !spaceDown) map.dragPan.disable(); else map.dragPan.enable(); }
+map.on('mousedown', (e) => {
+  if (!paintMode || editing || spaceDown || e.originalEvent.button !== 0) return;
+  painting = true; stroke = []; strokeStart = e.point;
+});
+map.on('mousemove', (e) => {
+  if (!painting) return;
+  if (Math.hypot(e.point.x - strokeStart.x, e.point.y - strokeStart.y) < 5 && !stroke.length) return;
+  if (map.getZoom() < 14) return;
+  const best = roadAt(e.point, e.lngLat);
+  if (!best || alreadyPainted(best)) return;
+  const v = { id: uid(), lines: best.map(l => l.slice()) };
+  svs.push(v); stroke.push(v); dirty = true; drawSv();
+});
+const endStroke = () => {
+  if (!painting) return; painting = false;
+  if (stroke.length) { paintStack.push({ op: 'addMany', vs: stroke }); renderList(); }
+  stroke = [];
+};
+map.on('mouseup', endStroke); window.addEventListener('mouseup', endStroke);
+document.addEventListener('keydown', (e) => { if (e.code === 'Space' && paintMode && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) { e.preventDefault(); spaceDown = true; updatePan(); map.getCanvas().style.cursor = 'grab'; } });
+document.addEventListener('keyup', (e) => { if (e.code === 'Space') { spaceDown = false; updatePan(); if (paintMode) map.getCanvas().style.cursor = 'pointer'; } });
 $('bPaintUndo').onclick = () => {
   const a = paintStack.pop(); if (!a) return;
-  if (a.op === 'add') svs = svs.filter(v => v.id !== a.v.id); else svs.splice(Math.min(a.i, svs.length), 0, a.v);
+  if (a.op === 'add') svs = svs.filter(v => v.id !== a.v.id);
+  else if (a.op === 'addMany') { const ids = new Set(a.vs.map(v => v.id)); svs = svs.filter(v => !ids.has(v.id)); }
+  else svs.splice(Math.min(a.i, svs.length), 0, a.v);
   dirty = true; renderList();
 };
 let svClearArmed = false;
